@@ -73,11 +73,14 @@ console.log('node=' + process.version);
   ok('引号未被啃', r.output.includes('Q="q"'), JSON.stringify(r.output));
 }
 
-// 4. 工作目录
+// 4. 工作目录：让脚本往相对路径写文件，再从 Node 侧按预期绝对路径读回来
+// （不比较路径字符串 —— Windows 上 TEMP 常是 8.3 短名 RUNNER~1，PowerShell 会展开成长名）
 {
-  const r = await run(isWin ? 'Write-Output ("PWD=" + (Get-Location).Path)' : 'echo "PWD=$(pwd)"');
-  const norm = (s) => s.replace(/\\/g, '/').toLowerCase();
-  ok('工作目录正确', r.ok && norm(r.output).includes(norm(OUT)), JSON.stringify(r.output));
+  const probe = path.join(OUT, 'probe.txt');
+  fs.rmSync(probe, { force: true });
+  const r = await run(isWin ? 'Set-Content -Path "probe.txt" -Value "PWD-PROBE" -Encoding utf8' : 'echo "PWD-PROBE" > probe.txt');
+  const landed = fs.existsSync(probe) && fs.readFileSync(probe, 'utf8').includes('PWD-PROBE');
+  ok('工作目录正确', r.ok && landed, 'ok=' + r.ok + ' exit=' + r.exitCode + ' landed=' + landed);
 }
 
 // 5. 退出码
