@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SessionEngine } from './engine/session';
 import { ensureTempDir, buildSystemPrompt, writeSystemPromptFile } from './engine/prompt';
+import { sessionBlobPath } from './engine/session-blob';
 import { registerIpc } from './ipc';
-import { createMainWindow, getMainWindow } from './window';
+import { createMainWindow, getMainWindow, setResizeHook } from './window';
 import { getSettings, setSettings } from './store';
 
-// 单实例锁：避免重复启动两个 Chrome 抢占同一个调试端口
+// 单实例锁：内嵌页面共用同一个 persist 分区，两个实例会互相顶掉登录态
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
@@ -19,23 +20,6 @@ app.on('second-instance', () => {
     win.focus();
   }
 });
-
-/** 解析 bin/macinput：打包后在 Resources/bin，开发态在仓库 bin/ */
-function resolveMacinput(): string {
-  const candidates = [
-    path.join(process.resourcesPath ?? '', 'bin', 'macinput'),
-    path.join(app.getAppPath(), 'bin', 'macinput'),
-    path.join(process.cwd(), 'bin', 'macinput')
-  ];
-  for (const p of candidates) {
-    try {
-      if (fs.existsSync(p)) return p;
-    } catch {
-      /* ignore */
-    }
-  }
-  return candidates[0];
-}
 
 function resolveSkillsDir(): string {
   const candidates = [
@@ -59,7 +43,6 @@ async function bootstrap() {
   const settings = getSettings();
   const tempDir = ensureTempDir(settings);
   const skillsDir = resolveSkillsDir();
-  const macinputPath = resolveMacinput();
 
   const promptContent = buildSystemPrompt({
     workDir: settings.workDir,
@@ -71,7 +54,6 @@ async function bootstrap() {
 
   engine = new SessionEngine({
     settings,
-    macinputPath,
     skillsDir,
     systemPromptPath,
     systemPrompt: promptContent,
@@ -81,7 +63,10 @@ async function bootstrap() {
     }
   });
 
-  registerIpc({ engine, macinputPath, skillsDir, systemPromptPath });
+  registerIpc({ engine, skillsDir, systemPromptPath });
+
+  // 内嵌网页视图跟随窗口尺寸重排
+  setResizeHook(() => engine?.layout());
 
   // macOS 菜单：保留复制粘贴与 ⌘. 急停
   const menu = Menu.buildFromTemplate([
@@ -131,8 +116,31 @@ async function bootstrap() {
           click: () => void engine?.abort()
         },
         {
-          label: '重新连接浏览器',
+          label: '显示 / 隐藏 DeepSeek 网页 (⌘⇧D)',
+          accelerator: 'CmdOrCtrl+Shift+D',
+          click: () => {
+            const v = engine?.setPageVisible(!engine.isPageVisible());
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) win.webContents.send('page:visibility', v);
+          }
+        },
+        {
+          label: '重新加载页面',
           click: () => void engine?.reconnect()
+        },
+        {
+          label: '导出登录态…',
+          click: () => {
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) win.webContents.send('menu:export-session');
+          }
+        },
+        {
+          label: '导入登录态…',
+          click: () => {
+            const win = getMainWindow();
+            if (win && !win.isDestroyed()) win.webContents.send('menu:import-session');
+          }
         }
       ]
     }
@@ -148,8 +156,11 @@ async function bootstrap() {
     void engine?.abort();
   });
 
-  // 自动启动浏览器（失败不阻塞 UI，渲染层会显示错误并给出重试按钮）
+  // 自动启动内嵌页面（失败不阻塞 UI，渲染层会显示错误并给出重试按钮）
   void engine.boot().catch(() => undefined);
+
+  // 登录态落盘路径，供「导出」默认目录提示
+  void sessionBlobPath();
 }
 
 app.whenReady().then(bootstrap).catch((err) => {
@@ -169,6 +180,5 @@ app.on('will-quit', () => {
 });
 
 app.on('before-quit', () => {
-  // 尽力关掉我们启动的 Chrome，避免残留占用调试端口
   void engine?.shutdown().catch(() => undefined);
 });

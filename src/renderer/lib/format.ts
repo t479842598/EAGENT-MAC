@@ -1,4 +1,10 @@
-// 渲染层纯函数工具：时间、字节、参数美化、截图路径提取
+// 渲染层纯函数工具：时间、字节、参数美化、截图路径提取、平台标签
+
+/** 渲染层判断宿主平台：主进程虽然知道，但每处文案都走一次 IPC 不划算 */
+export const isMac = /Mac/i.test(navigator.platform || navigator.userAgent);
+export const platformLabel = isMac ? 'macOS' : 'Windows';
+export const hotkeyAbort = isMac ? '⌘.' : 'Ctrl+.';
+export const hotkeyTogglePage = isMac ? '⌘⇧D' : 'Ctrl+Shift+D';
 
 export function relTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -21,11 +27,14 @@ export function shortTitle(text: string, max = 26): string {
   return one.length > max ? one.slice(0, max) + '…' : one || '新会话';
 }
 
-/** 从工具输出里抠出截图文件路径（screenshot 工具会打印「截图已保存：<path>」） */
+/**
+ * 从工具输出里抠出截图文件路径（screenshot 工具会打印「截图已保存：<path>」）。
+ * 必须同时兼容 POSIX 与 Windows 路径，否则 Windows 版缩略图永远不显示。
+ */
 export function extractImagePath(output?: string): string | null {
   if (!output) return null;
-  const m = output.match(/(\/[^\n]*?\.(?:jpg|jpeg|png|webp))/i);
-  return m ? m[1] : null;
+  const m = output.match(/((?:[A-Za-z]:\\|\/)[^\n\r]*?\.(?:jpg|jpeg|png|webp))/i);
+  return m ? m[1].trim() : null;
 }
 
 export function paramLines(params: Record<string, unknown>): { key: string; value: string }[] {

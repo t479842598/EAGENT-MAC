@@ -94,21 +94,10 @@ export function SettingsSheet({ open, settings, onClose, onSave }: SettingsSheet
             </div>
           </Row>
 
-          <Row label="Chrome 路径" hint="默认使用系统安装的 Google Chrome">
-            <input
-              value={value('chromePath')}
-              onChange={(e) => patch('chromePath', e.target.value)}
-              className={INPUT + ' w-64 font-mono text-[11px]'}
-            />
-          </Row>
-
-          <Row label="调试端口" hint="CDP 端口，默认 9222">
-            <input
-              type="number"
-              value={value('debugPort')}
-              onChange={(e) => patch('debugPort', Number(e.target.value) || 9222)}
-              className={INPUT + ' w-24 text-right'}
-            />
+          <Row label="内嵌网页" hint="页面跑在应用自带的 Chromium 里，不需要外部 Chrome，也不占用调试端口">
+            <span className="rounded-md bg-white/[0.06] px-2 py-1 text-[11px] text-neutral-400">
+              chat.deepseek.com · 进程内 CDP
+            </span>
           </Row>
 
           <Row label="自动授权" hint="开启后普通工具自动放行；高危命令仍强制逐条确认">

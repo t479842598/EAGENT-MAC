@@ -1,27 +1,40 @@
-import { BrowserWindow, shell, app } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 
 let mainWindow: BrowserWindow | null = null;
+let resizeHook: (() => void) | null = null;
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
 }
 
+/** 由 index.ts 注入：窗口尺寸变化时重新摆放内嵌网页视图 */
+export function setResizeHook(fn: () => void): void {
+  resizeHook = fn;
+}
+
 export function createMainWindow(): BrowserWindow {
   if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
 
+  // 自绘 45px 标题栏：macOS 走 hidden + 红绿灯浮层，Windows 走 titleBarOverlay
+  // （Windows 无红绿灯，用系统最小化/最大化/关闭三键叠在右上角，颜色由渲染层控制）。
+  const isMac = process.platform === 'darwin';
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 900,
     minHeight: 600,
     show: false,
-    // 与 open-claude-ui 的 ClaudeDesktopHeader 对齐：隐藏系统标题栏，红绿灯浮在内容上
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 18, y: 18 },
-    backgroundColor: '#fcfcfb',
-    vibrancy: 'sidebar',
-    visualEffectState: 'followWindow',
+    ...(isMac
+      ? { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 18, y: 18 } }
+      : {
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: { color: '#151515', symbolColor: '#d4d4d4', height: 45 }
+        }),
+    backgroundColor: '#151515',
+    // Windows 需要显式指定窗口图标；macOS 由 .icns 决定，传了反而不生效
+    ...(isMac ? {} : { icon: path.join(process.resourcesPath ?? app.getAppPath(), 'resources', 'icon.png') }),
+    ...(isMac ? { vibrancy: 'sidebar' as const, visualEffectState: 'followWindow' as const } : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -50,6 +63,21 @@ export function createMainWindow(): BrowserWindow {
   mainWindow.on('maximize', sendState);
   mainWindow.on('unmaximize', sendState);
 
+  // 内嵌网页视图是原生层，窗口变化必须显式重排，否则会错位
+  const relayout = () => {
+    try {
+      resizeHook?.();
+    } catch {
+      /* ignore */
+    }
+  };
+  mainWindow.on('resize', relayout);
+  mainWindow.on('enter-full-screen', relayout);
+  mainWindow.on('leave-full-screen', relayout);
+  mainWindow.on('maximize', relayout);
+  mainWindow.on('unmaximize', relayout);
+  mainWindow.on('restore', relayout);
+
   const devUrl = process.env['ELECTRON_RENDERER_URL'];
   if (devUrl) {
     void mainWindow.loadURL(devUrl);
@@ -68,6 +96,3 @@ export function toggleDevTools() {
   mainWindow?.webContents.toggleDevTools();
 }
 
-export function appIconPath(): string {
-  return path.join(app.getAppPath(), 'resources', 'icon.png');
-}

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatMessage, ToolCall } from '@shared/types';
 import { Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
-import { extractImagePath } from '../lib/format';
+import { extractImagePath, platformLabel } from '../lib/format';
 import { api } from '../lib/api';
 
 interface MessageListProps {
@@ -109,10 +109,10 @@ export function MessageList({ messages, onVerdict, onOpenImage }: MessageListPro
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-5 py-6">
         {messages.length === 0 ? (
           <div className="mt-24 text-center">
-            <h2 className="text-[19px] font-medium text-neutral-200">EAgent · macOS</h2>
+            <h2 className="text-[19px] font-medium text-neutral-200">EAgent · {platformLabel}</h2>
             <p className="mx-auto mt-2 max-w-md text-[13px] leading-relaxed text-neutral-500">
-              通过 Chrome 调试协议驱动 chat.deepseek.com，在你本机执行终端命令、截屏、鼠标键盘与文件上传。
-              首次使用请先点右上角「启动浏览器」并登录 DeepSeek。
+              内嵌 chat.deepseek.com 页面，由 DeepSeek 在本机执行终端命令、截屏、鼠标键盘与文件上传。
+              首次使用请点右上角「显示网页」在内嵌页面里登录一次，登录态会长期保存在本地。
             </p>
           </div>
         ) : (

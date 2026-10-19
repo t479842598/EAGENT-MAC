@@ -29,9 +29,13 @@ function jsString(s: string): string {
 }
 
 /**
- * DeepSeek 网页驱动。逻辑对齐上游 2_发送并等待回复.ps1：
- *  快照 → 上传 → 注入文本 → 发送 → 轮询（sawNew + 连续稳定）→ 回收
- * 差异：全 UTF-8（无 GBK 转码）；新增「停止生成按钮消失」作为并行完成判据。
+ * DeepSeek 网页驱动。
+ *
+ * 与前代（外部 Chrome 版）的差异：
+ *  1. 文本注入从「原生 setter + dispatch input」改为 CDP Input.insertText ——
+ *     前者在 React 受控组件上不会同步状态，发送按钮保持 disabled，实测完全发不出去。
+ *  2. 发送从「派发合成 KeyboardEvent」改为 Input.dispatchKeyEvent —— 合成事件被 React 忽略。
+ *  3. 不再调用 Page.bringToFront（内嵌视图可能处于隐藏态，且无需抢前台）。
  */
 export class DeepSeekDriver {
   constructor(private client: CdpClient) {}
@@ -43,12 +47,21 @@ export class DeepSeekDriver {
   async snapshot(): Promise<{ assistantCount: number; userCount: number; lastAssistant: string }> {
     const s = this.sel();
     const expr = `(() => {
-      const asst = document.querySelectorAll(${jsString(s.assistant.join(','))});
+      const sels = ${JSON.stringify(s.assistant)};
+      let nodes = [];
+      for (const sel of sels) {
+        const found = document.querySelectorAll(sel);
+        if (found.length) { nodes = Array.from(found); break; }
+      }
       const users = document.querySelectorAll(${jsString(s.user.join(','))});
-      const last = asst.length ? (asst[asst.length - 1].innerText || '') : '';
-      return { assistantCount: asst.length, userCount: users.length, lastAssistant: last };
+      const last = nodes.length ? (nodes[nodes.length - 1].innerText || '') : '';
+      return { assistantCount: nodes.length, userCount: users.length, lastAssistant: last };
     })()`;
-    const res = await this.client.evaluate<{ assistantCount: number; userCount: number; lastAssistant: string }>(expr);
+    const res = await this.client.evaluate<{
+      assistantCount: number;
+      userCount: number;
+      lastAssistant: string;
+    }>(expr);
     return res ?? { assistantCount: 0, userCount: 0, lastAssistant: '' };
   }
 
@@ -69,6 +82,17 @@ export class DeepSeekDriver {
     return !!res;
   }
 
+  /** 输入框当前内容（用于校验注入是否生效） */
+  async inputValue(): Promise<string> {
+    const s = this.sel();
+    const expr = `(() => {
+      const el = document.querySelector(${jsString(s.input.join(','))});
+      return el ? (el.value ?? '') : '';
+    })()`;
+    const res = await this.client.evaluate<string>(expr);
+    return res ?? '';
+  }
+
   async isLoggedIn(): Promise<boolean> {
     if (!(await this.hasInput())) return false;
     // 登录态以 localStorage.userToken 为准：正文里「登录」二字经常出现在侧栏历史标题中，
@@ -80,7 +104,6 @@ export class DeepSeekDriver {
         const parsed = JSON.parse(raw);
         const token = parsed && (parsed.value ?? parsed.token);
         if (!token) return false;
-        // 有输入框 + 有 token + 页面没有全屏登录弹层
         const hasComposer = !!document.querySelector('textarea');
         const loginModal = !!document.querySelector('[class*="login-modal"],[class*="loginModal"]');
         return hasComposer && !loginModal;
@@ -110,55 +133,55 @@ export class DeepSeekDriver {
     return false;
   }
 
-  /** 用原生 setter 注入文本，绕过 React 受控组件 */
-  async injectText(text: string): Promise<boolean> {
+  /** 聚焦输入框并清空（若已有内容先全选） */
+  async focusInput(): Promise<boolean> {
     const s = this.sel();
     const expr = `(() => {
-      const ta = document.querySelector(${jsString(s.input.join(','))});
-      if (!ta) return false;
-      const proto = ta instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-      setter.call(ta, ${jsString(text)});
-      ta.dispatchEvent(new Event('input', { bubbles: true }));
-      ta.dispatchEvent(new Event('change', { bubbles: true }));
-      ta.focus();
-      return ta.value.length > 0;
+      const el = document.querySelector(${jsString(s.input.join(','))});
+      if (!el) return false;
+      el.focus();
+      el.setSelectionRange && el.setSelectionRange(0, (el.value || '').length);
+      return true;
     })()`;
     const res = await this.client.evaluate<boolean>(expr);
     return !!res;
   }
 
-  async pressEnter(): Promise<void> {
-    const expr = `(() => {
-      const ta = document.querySelector(${jsString(this.sel().input.join(','))});
-      const target = ta || document.body;
-      const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
-      target.dispatchEvent(new KeyboardEvent('keydown', opts));
-      target.dispatchEvent(new KeyboardEvent('keypress', opts));
-      target.dispatchEvent(new KeyboardEvent('keyup', opts));
-      return true;
-    })()`;
-    await this.client.evaluate(expr);
+  /**
+   * 注入文本。必须走 CDP Input.insertText：真实输入事件才能让 React 同步状态、
+   * 把发送按钮从 disabled 切到 enabled。
+   */
+  async injectText(text: string): Promise<boolean> {
+    if (!(await this.focusInput())) return false;
+    await this.client.insertText(text);
+    await sleep(200);
+    const v = await this.inputValue();
+    return v.length > 0;
   }
 
+  async pressEnter(): Promise<void> {
+    await this.client.pressEnter();
+  }
+
+  /** 点击发送按钮（作为 Enter 发送失败时的兜底） */
   async clickSendButton(): Promise<boolean> {
     const s = this.sel();
     const expr = `(() => {
       const list = Array.from(document.querySelectorAll(${jsString(s.sendButton.join(','))}));
-      if (!list.length) return false;
+      if (!list.length) return null;
       const w = window.innerWidth, h = window.innerHeight;
       const filtered = list.filter((el) => {
         const r = el.getBoundingClientRect();
-        return r.x > w * 0.5 && r.y > h * 0.6 && r.width > 0 && r.height > 0;
+        return r.x > w * 0.4 && r.y > h * 0.5 && r.width > 0 && r.height > 0;
       });
       const target = filtered[0] || list[0];
-      target.click();
-      return true;
+      const r = target.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
     })()`;
-    const res = await this.client.evaluate<boolean>(expr);
-    return !!res;
+    const pos = await this.client.evaluate<{ x: number; y: number } | null>(expr);
+    if (!pos) return false;
+    await this.client.mouseClick(pos.x, pos.y, 'left');
+    return true;
   }
 
   async sendAndWait(opts: SendOptions): Promise<SendResult> {
@@ -167,10 +190,8 @@ export class DeepSeekDriver {
     const pollMs = opts.pollMs ?? 300;
     const stableTicks = opts.stableTicks ?? 7;
 
-    await this.client.bringToFront();
-
     if (!(await this.hasInput())) {
-      throw new Error('页面未就绪：找不到输入框。请在 Chrome 窗口完成登录/验证后重试。');
+      throw new Error('页面未就绪：找不到输入框。请在内嵌页面完成登录后重试。');
     }
 
     const before = await this.snapshot();
@@ -185,14 +206,13 @@ export class DeepSeekDriver {
     if (hasText) {
       const ok = await this.injectText(opts.text!);
       if (!ok) throw new Error('文本注入失败：输入框未接受内容');
-      await sleep(150);
+      await sleep(120);
       await this.pressEnter();
     } else {
       const ok = await this.clickSendButton();
       if (!ok) throw new Error('发送失败：未找到发送按钮');
     }
 
-    // 等待「新消息出现」
     let sawNew = false;
     let lastText = '';
     let stable = 0;
@@ -200,7 +220,12 @@ export class DeepSeekDriver {
 
     while (Date.now() - started < timeoutMs) {
       if (opts.signal?.aborted) {
-        return { text: best || lastText, elapsedMs: Date.now() - started, sawNew, timedOut: false };
+        return {
+          text: best || lastText,
+          elapsedMs: Date.now() - started,
+          sawNew,
+          timedOut: false
+        };
       }
       await sleep(pollMs);
       let snap: { assistantCount: number; userCount: number; lastAssistant: string } | null = null;
@@ -233,7 +258,6 @@ export class DeepSeekDriver {
         lastText = cur;
       }
 
-      // 双判据：文本稳定 && 停止按钮消失
       let stopVisible = false;
       try {
         stopVisible = await this.hasStopButton();
@@ -267,5 +291,22 @@ export class DeepSeekDriver {
     })()`;
     const res = await this.client.evaluate<Record<string, number>>(expr);
     return res ?? {};
+  }
+
+  /** 新建会话（点击「开启新对话」），避免历史消息影响计数 */
+  async newConversation(): Promise<boolean> {
+    const expr = `(() => {
+      const all = Array.from(document.querySelectorAll('div,button,a,span'));
+      const t = all.find((e) => {
+        const txt = (e.innerText || '').trim();
+        return (txt === '开启新对话' || txt === '新会话' || txt === 'New chat') && e.offsetHeight > 15 && e.offsetHeight < 80;
+      });
+      if (!t) return false;
+      t.click();
+      return true;
+    })()`;
+    const res = await this.client.evaluate<boolean>(expr);
+    if (res) await sleep(1200);
+    return !!res;
   }
 }

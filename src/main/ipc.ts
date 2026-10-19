@@ -6,18 +6,18 @@ import { DEFAULTS, getSettings, setSettings } from './store';
 import { SessionEngine } from './engine/session';
 import { runDoctor } from './engine/tools/doctor';
 import { ensureTempDir, buildSystemPrompt, writeSystemPromptFile } from './engine/prompt';
+import { readSessionBlob, writeSessionBlob, sessionBlobPath } from './engine/session-blob';
 import { getMainWindow } from './window';
 
 export interface IpcDeps {
   engine: SessionEngine;
-  macinputPath: string;
   skillsDir: string;
   systemPromptPath: string;
 }
 
 /** 所有渲染层可调用的通道，集中注册一次 */
 export function registerIpc(deps: IpcDeps) {
-  const { engine, macinputPath, skillsDir, systemPromptPath } = deps;
+  const { engine, skillsDir, systemPromptPath } = deps;
 
   // ---------- 引擎事件广播 ----------
   engine.on('event', (event) => {
@@ -58,6 +58,60 @@ export function registerIpc(deps: IpcDeps) {
     }
   );
 
+  // ---------- 内嵌网页显示 / 隐藏 ----------
+  ipcMain.handle('page:set-visible', (_e, visible: boolean) => {
+    const v = engine.setPageVisible(visible);
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('page:visibility', v);
+    return v;
+  });
+
+  ipcMain.handle('page:toggle-visible', () => {
+    const v = engine.setPageVisible(!engine.isPageVisible());
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('page:visibility', v);
+    return v;
+  });
+
+  ipcMain.handle('page:is-visible', () => engine.isPageVisible());
+
+  // ---------- 登录态导出 / 导入 ----------
+  ipcMain.handle('session:export-blob', async () => {
+    const blob = await engine.exportSession();
+    const win = getMainWindow();
+    const res = await dialog.showSaveDialog(win ?? BrowserWindow.getAllWindows()[0], {
+      title: '导出 DeepSeek 登录态',
+      defaultPath: path.join(app.getPath('downloads'), 'deepseek-session.json'),
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (res.canceled || !res.filePath) return { ok: false, path: '', cookies: 0, storage: 0 };
+    writeSessionBlob(blob, res.filePath);
+    return {
+      ok: true,
+      path: res.filePath,
+      cookies: blob.cookies.length,
+      storage: Object.keys(blob.localStorage ?? {}).length
+    };
+  });
+
+  ipcMain.handle('session:import-blob', async () => {
+    const win = getMainWindow();
+    const res = await dialog.showOpenDialog(win ?? BrowserWindow.getAllWindows()[0], {
+      title: '导入 DeepSeek 登录态',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }]
+    });
+    if (res.canceled || !res.filePaths.length) return { ok: false, path: '', cookies: 0, storage: 0 };
+    const blob = readSessionBlob(res.filePaths[0]);
+    if (!blob) {
+      return { ok: false, path: res.filePaths[0], cookies: 0, storage: 0, error: '文件不是有效的登录态备份' };
+    }
+    const r = await engine.importSession(blob);
+    return { ok: true, path: res.filePaths[0], ...r };
+  });
+
+  ipcMain.handle('session:blob-path', () => sessionBlobPath());
+
   // ---------- 设置 ----------
   ipcMain.handle('settings:get', () => getSettings());
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
@@ -69,12 +123,13 @@ export function registerIpc(deps: IpcDeps) {
 
   // ---------- 自检 ----------
   ipcMain.handle('doctor:run', async () => {
+    const settings = getSettings();
     return await runDoctor({
-      settings: getSettings(),
-      browser: engine.getBrowser(),
+      settings,
+      host: engine.getHost(),
       driver: engine.getDriver(),
-      macinputPath,
-      workDir: getSettings().workDir
+      skillsDir,
+      workDir: settings.workDir
     });
   });
 
@@ -164,6 +219,19 @@ export function registerIpc(deps: IpcDeps) {
     if (win.isMaximized()) win.unmaximize();
     else win.maximize();
     return win.isMaximized();
+  });
+
+  ipcMain.handle('window:content-size', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return { width: 0, height: 0 };
+    const [width, height] = win.getContentSize();
+    return { width, height };
+  });
+
+  // 渲染层布局完成后回报实测矩形，主进程据此摆放内嵌视图
+  ipcMain.handle('page:set-bounds', (_e, b: { x: number; y: number; width: number; height: number }) => {
+    engine.getHost().setBounds(b);
+    return true;
   });
 }
 

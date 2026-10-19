@@ -36,16 +36,21 @@ framer-motion 11       MIT
 lucide-react           ISC
 react-markdown 9       MIT
 remark-gfm 4           MIT
-ws 8                   MIT
 ```
 
 完整依赖树与版本见 `package-lock.json`；各包许可见 `node_modules/<pkg>/LICENSE`。
 
-## 4. 系统组件
+## 4. 系统组件与服务
 
-- **Google Chrome**：不随包分发，运行时由用户本机安装，通过 `--remote-debugging-port` 驱动。
-- **macinput**：本仓库自研原生工具（`src/main/native/macinput.swift`），
-  使用 Apple 系统框架 Cocoa / CoreGraphics / ApplicationServices，随 GPL-3.0 分发。
+- **Chromium**：由 Electron 内置并随包分发（Electron 33 对应 Chromium 130）。
+  应用通过 `webContents.debugger`（进程内 DevTools Protocol）驱使它，
+  **不依赖用户本机安装 Google Chrome**，也不开放任何调试端口。
+- **chat.deepseek.com**：网页内容与服务均属 DeepSeek，本仓库不打包、不反代、不转售；
+  应用只是在内嵌视图里加载该站点，等同于用户自己在浏览器中访问。
+- **Agent Skills**（`resources/skills/`）：见第 2 节。
+- **无自研原生二进制扩展**：鼠标、键盘、截图分别由 CDP `Input.*` 与
+  `webContents.capturePage()` 完成，因此不需要辅助功能或屏幕录制权限，
+  也没有与 CPU 架构绑定的原生模块需要编译。
 
 ---
 

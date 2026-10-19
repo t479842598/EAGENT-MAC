@@ -1,11 +1,7 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import type { WebContents } from 'electron';
 import type { Settings } from '../../../shared/types';
-import { readPermState, SCR_HINT } from './perm';
-
-const exec = promisify(execFile);
 
 export interface ScreenshotResult {
   ok: boolean;
@@ -14,88 +10,77 @@ export interface ScreenshotResult {
   info?: Record<string, unknown>;
 }
 
-function runMacinput(binPath: string, args: string[]): Promise<any> {
-  return exec(binPath, args, { timeout: 8000 }).then((r) => JSON.parse(r.stdout.trim()));
-}
-
+/**
+ * 截图工具 —— 从「系统 screencapture + 屏幕录制权限」改为 webContents.capturePage()。
+ *
+ * 两个关键事实（实测）：
+ *  1. capturePage 不需要屏幕录制权限，因为它截的是页面自身的合成结果；
+ *  2. 但 webContents 必须处于「有 display surface」的状态 —— 视图被 setVisible(false)
+ *     隐藏后仍然可以截（这一点与窗口 show:false 不同），实测返回非空位图。
+ */
 export async function takeScreenshot(
   params: { target: 'screen' | 'window'; windowId: number | null },
+  webContents: WebContents | null,
   settings: Settings,
-  tempDir: string,
-  macinputPath: string
+  tempDir: string
 ): Promise<ScreenshotResult> {
+  if (!webContents || webContents.isDestroyed()) {
+    return { ok: false, output: '[工具][错误] 截图失败：内嵌页面未就绪' };
+  }
+
   fs.mkdirSync(tempDir, { recursive: true });
   const file = path.join(tempDir, `屏幕截图_${Date.now()}.jpg`);
 
-  // 预检：未授权时 screencapture 会失败，提前给出可操作指引
-  const perm = await readPermState(macinputPath);
-  if (!perm.screenCaptureAllowed) {
-    return {
-      ok: false,
-      output: '[工具][错误] 截图失败：缺少「屏幕录制」权限。\n' + SCR_HINT
-    };
-  }
-
-  const args = ['-x', '-o', '-C', '-t', 'jpg'];
-  if (params.target === 'window' && params.windowId) {
-    args.push(`-l${params.windowId}`);
-  }
-  args.push(file);
-
+  let image: Electron.NativeImage;
   try {
-    await exec('/usr/sbin/screencapture', args, { timeout: 20_000 });
-  } catch (err: any) {
-    const msg = String(err?.stderr || err?.message || err);
-    if (/could not create image|not authorized|permission/i.test(msg)) {
+    image = await webContents.capturePage();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/display surface not available/i.test(msg)) {
       return {
         ok: false,
         output:
-          '[工具][错误] 截图失败：缺少「屏幕录制」权限。\n' +
-          '请到 系统设置 → 隐私与安全性 → 屏幕录制，勾选 EAgent 后重启应用。'
+          '[工具][错误] 截图失败：当前窗口不可见导致合成表面不可用。\n' +
+          '请确认窗口没有被最小化（隐藏到后台是可以的，最小化不行）。'
       };
     }
-    return { ok: false, output: `[工具][错误] 截图失败: ${msg.slice(0, 400)}` };
+    return { ok: false, output: `[工具][错误] 截图失败: ${msg.slice(0, 300)}` };
   }
 
-  if (!fs.existsSync(file)) {
-    return { ok: false, output: '[工具][错误] 截图失败：未生成文件（可能被系统权限拦截）' };
+  if (image.isEmpty()) {
+    return { ok: false, output: '[工具][错误] 截图失败：位图为空（窗口可能被最小化）' };
   }
 
-  let info: Record<string, unknown> | undefined;
-  try {
-    info = await runMacinput(macinputPath, ['info']);
-  } catch {
-    info = undefined;
-  }
+  const jpeg = image.toJPEG(85);
+  fs.writeFileSync(file, jpeg);
 
-  const size = fs.statSync(file).size;
-  const kb = (size / 1024).toFixed(0);
-  const displays = (info?.displays as any[]) ?? [];
-  const d0 = displays[0];
-  const mouse = (info?.mouse as any) ?? {};
+  const size = image.getSize();
+  const zoom = webContents.getZoomFactor?.() ?? 1;
+  // capturePage 出的是设备像素（Retina 下是 CSS 像素的两倍）。
+  // 鼠标工具吃的是 CSS 像素，必须把换算系数明确写给模型，否则它会把图片像素当坐标用。
+  const cssSize = webContents.executeJavaScript
+    ? await webContents
+        .executeJavaScript('({w: innerWidth, h: innerHeight})', true)
+        .catch(() => null)
+    : null;
+  const cssW = cssSize?.w || Math.round(size.width / zoom);
+  const cssH = cssSize?.h || Math.round(size.height / zoom);
+  const dpr = cssW ? Math.round((size.width / cssW) * 100) / 100 : 2;
+  const kb = (jpeg.length / 1024).toFixed(0);
 
   const lines: string[] = [];
   lines.push(`截图已保存：${file}（${kb} KB）`);
-  if (d0) {
-    lines.push('');
-    lines.push('【附加信息】');
-    lines.push(`- 主屏物理像素：${d0.pixelWidth} × ${d0.pixelHeight}（scale=${d0.scale}）`);
-    lines.push(`- 主屏逻辑点尺寸：${d0.logicalWidth} × ${d0.logicalHeight}`);
-    lines.push(`- 坐标系：左上原点，单位=逻辑点`);
-    lines.push(`- 当前鼠标逻辑坐标：(${Math.round(mouse.x ?? 0)}, ${Math.round(mouse.y ?? 0)})`);
-    lines.push('- 调用鼠标工具时请使用逻辑点坐标，不要用物理像素坐标。');
-  }
+  lines.push('');
+  lines.push('【附加信息】');
+  lines.push(`- 图片像素尺寸：${size.width} × ${size.height}`);
+  lines.push(`- 页面视口（CSS 像素）：${cssW} × ${cssH}`);
+  lines.push(`- 换算：CSS 坐标 = 图片坐标 ÷ ${dpr}`);
+  lines.push(`- 页面缩放：${zoom}`);
+  lines.push('- 鼠标/键盘工具使用【CSS 像素】坐标，左上原点；不要直接拿图片像素当坐标。');
   if (params.target === 'window' && params.windowId) {
-    lines.push(`- 已截取窗口 id=${params.windowId}`);
+    lines.push(`- 已忽略窗口 id=${params.windowId}（内嵌模式只有当前页面）`);
   }
+  lines.push(`- 当前页面：${webContents.getURL()}`);
 
-  return { ok: true, filePath: file, output: lines.join('\n'), info };
-}
-
-export async function listWindows(macinputPath: string): Promise<any> {
-  try {
-    return await runMacinput(macinputPath, ['windows']);
-  } catch {
-    return { windows: [] };
-  }
+  return { ok: true, filePath: file, output: lines.join('\n') };
 }

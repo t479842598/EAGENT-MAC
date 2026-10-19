@@ -1,0 +1,106 @@
+name: Release
+
+# 触发方式：
+#  1) 推 tag：git tag v1.0.0 && git push origin v1.0.0  → 打四份安装包并建 GitHub Release；
+#  2) 手动：Actions → Release → Run workflow（只出 artifact，不建 Release）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 打包 ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: mac
+            arch: arm64
+            label: macOS arm64
+          - os: macos-14
+            platform: mac
+            arch: x64
+            label: macOS x64
+          - os: windows-latest
+            platform: win
+            arch: x64
+            label: Windows x64
+          - os: windows-latest
+            platform: win
+            arch: arm64
+            label: Windows arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 构建渲染层与主进程
+        run: npm run build
+
+      - name: 打包（不发布，产物交给下一步）
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+        env:
+          # 未配置签名证书时不签名，避免 electron-builder 尝试自动发现证书而失败
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 收集产物
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          if [ "${{ matrix.platform }}" = "mac" ]; then
+            cp dist/*.dmg dist/*.zip artifacts/ 2>/dev/null || true
+          else
+            cp dist/*.exe dist/*.zip artifacts/ 2>/dev/null || true
+          fi
+          ls -lh artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eagent-${{ matrix.platform }}-${{ matrix.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 建立 GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出待发布文件
+        run: ls -lh artifacts
+
+      - name: 创建 Release 并上传全部安装包
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "EAgent ${GITHUB_REF_NAME}" \
+            --generate-notes

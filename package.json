@@ -1,7 +1,7 @@
 {
   "name": "eagent-mac",
-  "version": "0.1.0",
-  "description": "EAgent for macOS — Claude-style desktop client driving chat.deepseek.com over CDP with local tool execution",
+  "version": "1.0.0",
+  "description": "EAgent — Claude-style desktop client that drives chat.deepseek.com inside an embedded Chromium with in-process CDP and local tool execution",
   "main": "./out/main/index.js",
   "author": "t479842598",
   "license": "GPL-3.0",
@@ -9,10 +9,11 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:native": "bash scripts/build-native.sh",
     "start": "electron-vite preview",
-    "dist": "npm run build:native && electron-vite build && electron-builder --mac --arm64",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist": "electron-vite build && electron-builder --mac --win",
     "sync-cds": "bash scripts/sync-cds.sh"
   },
   "dependencies": {
@@ -21,14 +22,12 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
-    "remark-gfm": "^4.0.0",
-    "ws": "^8.22.0"
+    "remark-gfm": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
     "electron": "^33.2.0",

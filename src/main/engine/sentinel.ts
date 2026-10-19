@@ -114,14 +114,26 @@ function parseUpload(body: string): Record<string, unknown> {
 }
 
 function parseMouse(body: string): Record<string, unknown> {
-  const x = between(body, 'agent_mouse_simulate_1_start', '_agent_mouse_simulate_1_end');
-  const y = between(body, 'agent_mouse_simulate_2_start', '_agent_mouse_simulate_2_end');
+  const raw1 = (between(body, 'agent_mouse_simulate_1_start', '_agent_mouse_simulate_1_end') ?? '').trim();
+  const raw2 = (between(body, 'agent_mouse_simulate_2_start', '_agent_mouse_simulate_2_end') ?? '').trim();
   const b = between(body, 'agent_mouse_simulate_3_start', '_agent_mouse_simulate_3_end');
   const button = (b ?? 'left').trim().toLowerCase();
+  const btn = ['left', 'right', 'middle'].includes(button) ? button : 'left';
+
+  // 内嵌模式扩展：_1_ 可以是 list（枚举可点击元素）或 scroll（_2_ 为 dy）
+  const mode = raw1.toLowerCase();
+  if (mode === 'list') {
+    return { x: null, y: null, button: btn, list: true };
+  }
+  if (mode === 'scroll') {
+    const dy = raw2 !== '' && !Number.isNaN(Number(raw2)) ? Number(raw2) : -400;
+    return { x: null, y: null, button: btn, scrollDy: dy };
+  }
+
   return {
-    x: x !== null ? Number(x) : null,
-    y: y !== null ? Number(y) : null,
-    button: ['left', 'right', 'middle'].includes(button) ? button : 'left'
+    x: raw1 !== '' && !Number.isNaN(Number(raw1)) ? Number(raw1) : null,
+    y: raw2 !== '' && !Number.isNaN(Number(raw2)) ? Number(raw2) : null,
+    button: btn
   };
 }
 
@@ -158,6 +170,8 @@ function summarize(name: ToolName, params: Record<string, unknown>, body: string
       return `上传 ${files.length} 个文件`;
     }
     case 'mouse':
+      if (params.list) return '鼠标：枚举页面可点击元素';
+      if (typeof params.scrollDy === 'number') return `鼠标：滚轮 dy=${params.scrollDy}`;
       return `鼠标 ${params.button} 点击 (${params.x}, ${params.y})`;
     case 'keyboard':
       return `键盘 ${params.mode} ${(params.key || params.text || '') as string}`.trim();

@@ -1,16 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Play, RotateCw, Power, Activity } from 'lucide-react';
+import { RotateCw, Activity, Monitor, MonitorOff, KeyRound } from 'lucide-react';
 import type { SessionState } from '@shared/types';
-import { statusKind, statusLabel } from '../lib/format';
+import { statusKind, statusLabel, hotkeyTogglePage } from '../lib/format';
 import { StatusDot } from '@cds/StatusIndicators';
 
 interface TitleBarProps {
   state: SessionState;
   detail?: string;
-  onBoot: () => void;
+  pageVisible: boolean;
+  onTogglePage: () => void;
   onReconnect: () => void;
-  onShutdown: () => void;
   onOpenDoctor: () => void;
+  onExportSession: () => void;
 }
 
 /**
@@ -19,7 +20,15 @@ interface TitleBarProps {
  * 全屏/缩放事件，逻辑正确但内部结构固定，无法承载本应用的运行控制按钮组；
  * 这里保留同样的几何规格（74px / Math.min(zoom,1) 逆补偿）自行实现。
  */
-export function TitleBar({ state, detail, onBoot, onReconnect, onShutdown, onOpenDoctor }: TitleBarProps) {
+export function TitleBar({
+  state,
+  detail,
+  pageVisible,
+  onTogglePage,
+  onReconnect,
+  onOpenDoctor,
+  onExportSession
+}: TitleBarProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const [zoom, setZoom] = useState(1);
 
@@ -36,8 +45,12 @@ export function TitleBar({ state, detail, onBoot, onReconnect, onShutdown, onOpe
     };
   }, []);
 
-  const needsSpacer = navigator.userAgent.includes('Mac') && !fullscreen;
+  const isMac = navigator.userAgent.includes('Mac');
+  // macOS：左侧 74px 红绿灯避让；
+  // Windows：右上角是系统窗口按钮（titleBarOverlay），右侧留出约 140px，否则按钮会被盖住。
+  const needsSpacer = isMac && !fullscreen;
   const spacer = needsSpacer ? Math.round(74 / Math.min(zoom, 1)) : 0;
+  const rightInset = isMac ? 0 : 140;
 
   return (
     <>
@@ -53,7 +66,7 @@ export function TitleBar({ state, detail, onBoot, onReconnect, onShutdown, onOpe
         <div style={{ width: spacer }} className="shrink-0" />
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <span className="text-[13px] font-medium text-neutral-100">EAgent</span>
-          <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-neutral-400">macOS</span>
+          <span className="rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-neutral-400">内嵌版</span>
           <span className="mx-1 h-3 w-px bg-white/10" />
           <StatusDot kind={statusKind(state)} label={statusLabel(state)} />
           {detail && <span className="truncate text-[11px] text-neutral-500">{detail}</span>}
@@ -61,24 +74,36 @@ export function TitleBar({ state, detail, onBoot, onReconnect, onShutdown, onOpe
 
         <div
           className="draggable-none flex shrink-0 items-center gap-1"
-          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          style={{ WebkitAppRegion: 'no-drag', marginRight: rightInset } as React.CSSProperties}
         >
           <button
             type="button"
-            onClick={onBoot}
-            title="启动浏览器并连接"
-            className="flex h-7 items-center gap-1 rounded-lg bg-white/[0.07] px-2.5 text-[11.5px] text-neutral-200 transition-colors hover:bg-white/[0.12]"
+            onClick={onTogglePage}
+            title={`${pageVisible ? '隐藏' : '显示'} DeepSeek 网页（${hotkeyTogglePage}）`}
+            className={`flex h-7 items-center gap-1 rounded-lg px-2.5 text-[11.5px] transition-colors ${
+              pageVisible
+                ? 'bg-clay/20 text-clay'
+                : 'bg-white/[0.07] text-neutral-200 hover:bg-white/[0.12]'
+            }`}
           >
-            <Play size={11} />
-            启动浏览器
+            {pageVisible ? <Monitor size={11} /> : <MonitorOff size={11} />}
+            {pageVisible ? '隐藏网页' : '显示网页'}
           </button>
           <button
             type="button"
             onClick={onReconnect}
-            title="重新连接页面"
+            title="重新加载内嵌页面"
             className="flex size-7 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-white/[0.07] hover:text-neutral-200"
           >
             <RotateCw size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={onExportSession}
+            title="导出登录态（迁移到另一台机器）"
+            className="flex size-7 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-white/[0.07] hover:text-neutral-200"
+          >
+            <KeyRound size={12} />
           </button>
           <button
             type="button"
@@ -87,14 +112,6 @@ export function TitleBar({ state, detail, onBoot, onReconnect, onShutdown, onOpe
             className="flex size-7 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-white/[0.07] hover:text-neutral-200"
           >
             <Activity size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={onShutdown}
-            title="关闭浏览器"
-            className="flex size-7 items-center justify-center rounded-lg text-neutral-400 transition-colors hover:bg-white/[0.07] hover:text-red-400"
-          >
-            <Power size={12} />
           </button>
         </div>
       </header>

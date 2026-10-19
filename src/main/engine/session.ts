@@ -11,17 +11,17 @@ import type {
   Settings,
   ToolCall
 } from '../../shared/types';
-import { BrowserManager } from './browser';
-import { CdpClient, CdpError } from './cdp';
+import { RELAYOUT_CHANNEL } from '../../shared/layout';
 import { DeepSeekDriver } from './deepseek';
-import { buildSystemPrompt } from './prompt';
+import { WebViewHost } from './webview';
+import { readSessionBlob, sessionBlobPath, type SessionBlob } from './session-blob';
 import { detectFakeCall, parseToolCall, type ParsedToolCall } from './sentinel';
 import { executeTool, wrapToolResult, type ToolContext } from './tools';
 import { detectDanger } from './tools/shell';
+import { getMainWindow } from '../window';
 
 export interface SessionEngineOptions {
   settings: Settings;
-  macinputPath: string;
   skillsDir: string;
   systemPromptPath: string;
   /** 系统提示词正文：首轮对话前注入，之后靠对话历史维持 */
@@ -38,31 +38,39 @@ interface PendingApproval {
 
 const now = () => new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
+/**
+ * 会话引擎。
+ *
+ * 与上一代最大的区别：不再启动外部 Chrome，也不再连 9222 端口。
+ * 页面由 WebViewHost 在进程内托管，CDP 走 webContents.debugger，
+ * 因此截图/鼠标/键盘全部零系统权限（不碰辅助功能、不碰屏幕录制）。
+ */
 export class SessionEngine extends EventEmitter {
   private settings: Settings;
-  private browser: BrowserManager;
+  private host: WebViewHost;
   private driver: DeepSeekDriver | null = null;
-  private client: CdpClient | null = null;
   private state: SessionState = 'idle';
   private stats: SessionStats = {
     turns: 0,
     toolCalls: 0,
     state: 'idle',
-    chromeConnected: false,
+    pageConnected: false,
     loggedIn: false
   };
   private pending: PendingApproval | null = null;
   private abortController: AbortController | null = null;
   private alwaysAllow = new Set<string>();
-  private booted = false;
   /** 系统提示词是否已注入当前会话 */
   private promptInjected = false;
 
   constructor(private opts: SessionEngineOptions) {
     super();
     this.settings = opts.settings;
-    this.browser = new BrowserManager(opts.settings);
+    this.host = new WebViewHost(opts.settings);
     this.alwaysAllow = new Set(opts.settings.alwaysAllow ?? []);
+    this.host.on('status', (e: { status: string; url?: string; detail?: string }) => {
+      if (e.detail) this.log('info', e.detail);
+    });
   }
 
   // ---------- 事件 ----------
@@ -90,7 +98,7 @@ export class SessionEngine extends EventEmitter {
 
   updateSettings(s: Settings) {
     this.settings = s;
-    this.browser.updateSettings(s);
+    this.host.updateSettings(s);
     this.alwaysAllow = new Set(s.alwaysAllow ?? []);
   }
 
@@ -98,36 +106,69 @@ export class SessionEngine extends EventEmitter {
     return this.state;
   }
 
-  /** 供 doctor 使用的只读句柄 */
-  getBrowser(): BrowserManager {
-    return this.browser;
+  getHost(): WebViewHost {
+    return this.host;
   }
 
   getDriver(): DeepSeekDriver | null {
     return this.driver;
   }
 
+  /**
+   * 窗口尺寸变化时让渲染层重新测量占位 div 并回报矩形。
+   * 主进程不自己算高度：顶栏/输入区高度由 DOM 决定，硬算必然错位。
+   */
+  layout(): void {
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send(RELAYOUT_CHANNEL);
+  }
+
   async boot(): Promise<void> {
-    if (this.state === 'booting' || this.state === 'ready' || this.state === 'awaiting') return;
-    this.setState('booting', '启动 Chrome…');
+    if (this.state === 'booting') return;
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) {
+      this.setState('error', '主窗口尚未创建');
+      return;
+    }
+    this.setState('booting', '启动内嵌页面…');
     try {
-      const launch = await this.browser.launch();
-      this.log('info', launch.alreadyRunning ? 'Chrome 调试端口已在运行，复用现有实例' : `Chrome 已启动 (pid=${launch.pid})`);
+      // 初始矩形给个兜底值，渲染层挂载后会立刻用实测矩形覆盖
+      const [w, h] = win.getContentSize();
+      await this.host.attach(win, { x: 0, y: 45, width: w - 248, height: Math.max(1, h - 141) });
 
-      this.setState('booting', '连接 CDP…');
-      const client = await this.browser.connect();
-      this.client = client;
-      const driver = new DeepSeekDriver(client);
-      this.driver = driver;
-      this.stats.chromeConnected = true;
+      const client = this.host.getClient();
+      if (!client) throw new Error('内嵌页面 CDP 未就绪');
+      this.driver = new DeepSeekDriver(client);
+      this.stats.pageConnected = true;
 
-      // 等页面加载出输入框
-      for (let i = 0; i < 40; i++) {
-        if (await driver.hasInput()) break;
-        await new Promise((r) => setTimeout(r, 500));
+      const ready = await this.host.waitForReady(45_000);
+      if (!ready) {
+        this.stats.loggedIn = false;
+        this.setState('ready', '等待登录 DeepSeek');
+        this.emitStats();
+        return;
       }
-      this.stats.loggedIn = await driver.isLoggedIn();
-      this.booted = true;
+      this.stats.loggedIn = await this.driver.isLoggedIn().catch(() => false);
+
+      // 未登录但本地有备份 → 自动导入（换机/重装后不用再手动选文件）
+      if (!this.stats.loggedIn) {
+        const blobFile = sessionBlobPath();
+        if (fs.existsSync(blobFile)) {
+          const blob = readSessionBlob(blobFile);
+          if (blob && blob.cookies.length) {
+            this.log('info', `检测到登录态备份，正在导入 ${blob.cookies.length} 条 cookie…`);
+            try {
+              await this.host.importSession(blob);
+              await this.host.waitForReady(20_000);
+              this.stats.loggedIn = await this.driver.isLoggedIn().catch(() => false);
+            } catch {
+              /* 导入失败就走手动登录 */
+            }
+          }
+        }
+      }
+
       this.setState('ready', this.stats.loggedIn ? '已就绪' : '等待登录 DeepSeek');
       this.emitStats();
     } catch (err) {
@@ -138,28 +179,36 @@ export class SessionEngine extends EventEmitter {
   }
 
   async reconnect(): Promise<void> {
-    this.client?.close();
-    this.client = null;
+    this.host.getClient()?.close();
     this.driver = null;
-    this.booted = false;
-    this.stats.chromeConnected = false;
+    this.stats.pageConnected = false;
     this.setState('idle');
-    await this.boot();
+    try {
+      await this.host.reload();
+      const client = this.host.getClient();
+      if (client) {
+        this.driver = new DeepSeekDriver(client);
+        this.stats.pageConnected = true;
+        await this.host.waitForReady(30_000);
+        this.stats.loggedIn = await this.driver.isLoggedIn().catch(() => false);
+        this.setState('ready', this.stats.loggedIn ? '已就绪' : '等待登录 DeepSeek');
+      }
+    } catch (err) {
+      this.setState('error', err instanceof Error ? err.message : String(err));
+    }
+    this.emitStats();
   }
 
   async shutdown(): Promise<void> {
     try {
       this.abortController?.abort();
-      await this.browser.close();
+      await this.host.destroy();
     } catch {
       /* ignore */
     }
-    this.client?.close();
-    this.client = null;
     this.driver = null;
-    this.stats.chromeConnected = false;
+    this.stats.pageConnected = false;
     this.stats.loggedIn = false;
-    this.booted = false;
     this.setState('idle', '已关闭');
   }
 
@@ -171,6 +220,29 @@ export class SessionEngine extends EventEmitter {
       this.pending = null;
     }
     this.setState('ready', '已中止');
+  }
+
+  /** 显示/隐藏内嵌网页（隐藏后 CDP 仍可用，后台静默跑） */
+  setPageVisible(v: boolean): boolean {
+    this.host.setVisible(v);
+    return this.host.isVisible();
+  }
+
+  isPageVisible(): boolean {
+    return this.host.isVisible();
+  }
+
+  async exportSession(): Promise<SessionBlob> {
+    return await this.host.exportSession();
+  }
+
+  async importSession(blob: SessionBlob): Promise<{ cookies: number; storage: number }> {
+    const r = await this.host.importSession(blob);
+    if (this.driver) {
+      this.stats.loggedIn = await this.driver.isLoggedIn().catch(() => false);
+      this.emitStats();
+    }
+    return r;
   }
 
   // ---------- 会话主循环 ----------
@@ -221,8 +293,7 @@ export class SessionEngine extends EventEmitter {
         outbound = `${this.opts.systemPrompt}\n\n---\n\n${text}`;
         this.promptInjected = true;
       }
-      const result = await this.runTurn(outbound, files, driver, tempDir);
-      if (!result) return; // 已由 runTurn 内部收尾
+      await this.runTurn(outbound, files, driver, tempDir);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.emitEvent({ type: 'error', message: msg });
@@ -240,7 +311,7 @@ export class SessionEngine extends EventEmitter {
     driver: DeepSeekDriver,
     tempDir: string
   ): Promise<boolean> {
-    let nextPayload: { text?: string; files?: string[] } = { text: firstText, files: firstFiles };
+    let nextPayload: { text?: string; files?: string[] } | null = { text: firstText, files: firstFiles };
     let guard = 0;
     // 关键：abort() 会把 this.abortController 置 null，所以必须在这里捕获同一个 signal 引用，
     // 否则后面的 signal.aborted 判断会读到 null 而漏掉中止。
@@ -279,7 +350,7 @@ export class SessionEngine extends EventEmitter {
       if (res.timedOut && !res.text) {
         this.emitEvent({
           type: 'error',
-          message: `等待回复超时（${this.settings.replyTimeoutMs}ms）。请检查 Chrome 窗口是否卡在验证码/登录页。`
+          message: `等待回复超时（${this.settings.replyTimeoutMs}ms）。请确认内嵌页面没有停在验证码/登录页。`
         });
         this.setState('error', '等待回复超时');
         return false;
@@ -354,9 +425,10 @@ export class SessionEngine extends EventEmitter {
       const ctx: ToolContext = {
         settings: this.settings,
         tempDir,
-        macinputPath: this.opts.macinputPath,
         skillsDir: this.opts.skillsDir,
-        uploadFiles: (files) => driver.uploadFiles(files)
+        webContents: () => this.host.getWebContents(),
+        client: () => this.host.getClient(),
+        uploadFiles: (f) => driver.uploadFiles(f)
       };
 
       let execResult;
@@ -381,14 +453,9 @@ export class SessionEngine extends EventEmitter {
         }
       });
 
-      // 截图等产出文件 → 进消息图集
+      // 截图产出 → 作为消息图片挂到卡片上，渲染层据此显示缩略图
       if (execResult.files?.length) {
-        this.emitEvent({
-          type: 'tool_update',
-          messageId,
-          callId: toolCall.id,
-          patch: { output: execResult.output }
-        });
+        assistantMsg.images = execResult.files.map((f) => ({ path: f, name: path.basename(f) }));
       }
 
       this.setState('feeding', '回填工具结果…');

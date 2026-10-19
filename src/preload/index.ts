@@ -13,6 +13,13 @@ const on = <T extends unknown[]>(channel: string, cb: (...args: T) => void) => {
   return () => ipcRenderer.removeListener(channel, handler);
 };
 
+export interface SessionBlobInfo {
+  ok: boolean;
+  path: string;
+  cookies: number;
+  storage: number;
+}
+
 const api = {
   // ---------- 会话 ----------
   boot: (): Promise<string> => ipcRenderer.invoke('session:boot'),
@@ -24,6 +31,22 @@ const api = {
   approve: (callId: string, verdict: 'allow_once' | 'always_allow' | 'deny'): Promise<boolean> =>
     ipcRenderer.invoke('session:approve', { callId, verdict }),
   onEvent: (cb: (event: SessionEvent) => void) => on<[SessionEvent]>('session:event', cb),
+
+  // ---------- 内嵌网页 ----------
+  setPageVisible: (visible: boolean): Promise<boolean> =>
+    ipcRenderer.invoke('page:set-visible', visible),
+  togglePage: (): Promise<boolean> => ipcRenderer.invoke('page:toggle-visible'),
+  isPageVisible: (): Promise<boolean> => ipcRenderer.invoke('page:is-visible'),
+  setPageBounds: (b: { x: number; y: number; width: number; height: number }): Promise<boolean> =>
+    ipcRenderer.invoke('page:set-bounds', b),
+  onPageVisibility: (cb: (visible: boolean) => void) => on<[boolean]>('page:visibility', cb),
+  onRelayout: (cb: () => void) => on<[]>('page:relayout', cb),
+
+  // ---------- 登录态迁移 ----------
+  exportSession: (): Promise<SessionBlobInfo> => ipcRenderer.invoke('session:export-blob'),
+  importSession: (): Promise<SessionBlobInfo> => ipcRenderer.invoke('session:import-blob'),
+  onMenuExport: (cb: () => void) => on<[]>('menu:export-session', cb),
+  onMenuImport: (cb: () => void) => on<[]>('menu:import-session', cb),
 
   // ---------- 设置 ----------
   getSettings: (): Promise<Settings> => ipcRenderer.invoke('settings:get'),
@@ -44,7 +67,11 @@ const api = {
   // ---------- 系统 ----------
   appVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke('system:open-external', url),
-  revealPath: (p: string): Promise<boolean> => ipcRenderer.invoke('system:reveal-path', p)
+  revealPath: (p: string): Promise<boolean> => ipcRenderer.invoke('system:reveal-path', p),
+
+  // ---------- 窗口 ----------
+  getContentSize: (): Promise<{ width: number; height: number }> =>
+    ipcRenderer.invoke('window:content-size')
 };
 
 const electronAPI = {

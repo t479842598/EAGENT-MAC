@@ -9,8 +9,8 @@ interface DoctorSheetProps {
 }
 
 /**
- * 自检面板：七项（Chrome / 调试端口 / 选择器 / 登录 / macinput / 辅助功能 / 屏幕录制 / 工作目录）。
- * 每项失败都给一键修复入口（打开系统设置或启动浏览器）。
+ * 自检面板：七项（内嵌页面 / 进程内调试通道 / 选择器 / 登录态 / shell / 技能目录 / 工作目录）。
+ * 内嵌版不再涉及 Chrome 安装、调试端口、辅助功能、屏幕录制 —— 那些权限全部消失了。
  */
 export function DoctorSheet({ open, onClose }: DoctorSheetProps) {
   const [report, setReport] = useState<DoctorReport | null>(null);
@@ -125,10 +125,10 @@ export function DoctorSheet({ open, onClose }: DoctorSheetProps) {
           )}
         </div>
 
-        {report?.macinput && (
+        {report?.page && (
           <div className="border-t border-white/[0.07] px-4 py-2">
             <pre className="max-h-24 overflow-auto font-mono text-[10px] leading-relaxed text-neutral-600">
-              {JSON.stringify(report.macinput, null, 2)}
+              {JSON.stringify(report.page, null, 2)}
             </pre>
           </div>
         )}

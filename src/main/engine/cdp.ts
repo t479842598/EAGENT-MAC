@@ -1,126 +1,113 @@
-import WebSocket from 'ws';
+import type { WebContents } from 'electron';
 
 /**
- * 零依赖 CDP 客户端。
- * 上游 EAgent 用 PowerShell ClientWebSocket 直连 page target；这里换成 ws，
- * 协议层完全一致（Runtime.evaluate / DOM.setFileInputFiles / Page.*）。
+ * 进程内 CDP 客户端。
+ *
+ * 旧版通过 ws 连接外部 Chrome 的 9222 调试端口；现在直接复用 Electron 自带的
+ * webContents.debugger —— 零端口、零外部浏览器、零辅助功能权限。
+ * 对外 API 与旧 ws 版保持一致，下游 DeepSeekDriver 无需感知协议来源。
  */
-export interface CdpTarget {
-  id: string;
-  type: string;
-  url: string;
-  title: string;
-  webSocketDebuggerUrl: string;
-}
-
 export class CdpError extends Error {
-  constructor(message: string, readonly code: 'NO_TARGET' | 'BROKEN' | 'TIMEOUT' | 'PROTOCOL' = 'PROTOCOL') {
+  constructor(
+    message: string,
+    readonly code: 'NO_TARGET' | 'BROKEN' | 'TIMEOUT' | 'PROTOCOL' = 'PROTOCOL'
+  ) {
     super(message);
     this.name = 'CdpError';
   }
 }
 
+export interface KeyEventInit {
+  key: string;
+  code?: string;
+  keyCode?: number;
+  modifiers?: number;
+  text?: string;
+}
+
+/** modifiers 位掩码（CDP 约定） */
+export const MOD = {
+  alt: 1,
+  ctrl: 2,
+  meta: 4,
+  shift: 8
+} as const;
+
 export class CdpClient {
-  private ws: WebSocket | null = null;
-  private seq = 0;
-  private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
-  private nullStreak = 0;
+  private attached = false;
   private closed = false;
+  private nullStreak = 0;
 
-  static async listTargets(port: number): Promise<CdpTarget[]> {
-    const res = await fetch(`http://127.0.0.1:${port}/json/list`);
-    if (!res.ok) throw new CdpError(`/json/list 返回 ${res.status}`, 'NO_TARGET');
-    return (await res.json()) as CdpTarget[];
-  }
+  constructor(private readonly wc: WebContents) {}
 
-  static async findPage(port: number, urlIncludes = 'deepseek'): Promise<CdpTarget> {
-    const targets = await CdpClient.listTargets(port);
-    const page = targets.find((t) => t.type === 'page' && t.url.includes(urlIncludes))
-      ?? targets.find((t) => t.type === 'page');
-    if (!page) throw new CdpError('未找到可用的页面 target', 'NO_TARGET');
-    return page;
-  }
-
-  async connect(wsUrl: string): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl, { perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
-      const timer = setTimeout(() => {
-        ws.terminate();
-        reject(new CdpError('WebSocket 连接超时', 'TIMEOUT'));
-      }, 10_000);
-      ws.on('open', () => {
-        clearTimeout(timer);
-        this.ws = ws;
-        resolve();
-      });
-      ws.on('error', (err) => {
-        clearTimeout(timer);
-        reject(new CdpError(`WebSocket 连接失败: ${err.message}`));
-      });
-      ws.on('message', (data) => this.onMessage(data.toString()));
-      ws.on('close', () => {
-        this.closed = true;
-        for (const [, p] of this.pending) {
-          clearTimeout(p.timer);
-          p.reject(new CdpError('CDP 连接已关闭', 'BROKEN'));
-        }
-        this.pending.clear();
-      });
-    });
-  }
-
-  private onMessage(raw: string) {
-    let msg: any;
+  async connect(): Promise<void> {
+    if (this.wc.isDestroyed()) throw new CdpError('页面已销毁', 'NO_TARGET');
+    if (this.attached) return;
     try {
-      msg = JSON.parse(raw);
-    } catch {
-      return;
+      this.wc.debugger.attach('1.3');
+    } catch (err) {
+      // 已附着（例如热重载后复用同一 webContents）视为成功
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/already attached/i.test(msg)) {
+        throw new CdpError(`调试器附着失败: ${msg}`, 'NO_TARGET');
+      }
     }
-    if (typeof msg.id !== 'number') return; // 事件帧，忽略
-    const entry = this.pending.get(msg.id);
-    if (!entry) return;
-    this.pending.delete(msg.id);
-    clearTimeout(entry.timer);
-    if (msg.error) {
-      entry.reject(new CdpError(`CDP ${msg.error.code}: ${msg.error.message}`));
-    } else {
-      entry.resolve(msg.result);
-    }
+    this.attached = true;
+    this.closed = false;
   }
 
-  send<T = any>(method: string, params: Record<string, unknown> = {}, timeoutMs = 30_000): Promise<T> {
-    if (!this.ws || this.closed) return Promise.reject(new CdpError('CDP 未连接', 'BROKEN'));
-    const id = ++this.seq;
-    const payload = JSON.stringify({ id, method, params });
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new CdpError(`CDP 调用超时: ${method}`, 'TIMEOUT'));
-      }, timeoutMs);
-      this.pending.set(id, { resolve: resolve as (v: any) => void, reject, timer });
-      this.ws!.send(payload, (err) => {
-        if (err) {
-          clearTimeout(timer);
-          this.pending.delete(id);
-          reject(new CdpError(`CDP 发送失败: ${err.message}`));
-        }
-      });
-    });
+  async send<T = any>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs = 30_000
+  ): Promise<T> {
+    if (this.closed || !this.attached) {
+      throw new CdpError('CDP 未连接', 'BROKEN');
+    }
+    if (this.wc.isDestroyed()) {
+      throw new CdpError('页面已销毁', 'BROKEN');
+    }
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const result = await Promise.race([
+        this.wc.debugger.sendCommand(method, params) as Promise<T>,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new CdpError(`CDP 调用超时: ${method}`, 'TIMEOUT')),
+            timeoutMs
+          );
+        })
+      ]);
+      return result;
+    } catch (err) {
+      if (err instanceof CdpError) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new CdpError(`CDP ${method} 失败: ${msg}`, 'PROTOCOL');
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**
-   * 求值并在页面内返回 JSON 可序列化结果。
-   * nullStreak 连续 10 次拿不到 result 判 BROKEN（对齐上游 exit 3 语义）。
+   * 求值并返回 JSON 可序列化结果。
+   * nullStreak 连续 10 次拿不到 result 判 BROKEN（沿用旧版语义）。
    */
-  async evaluate<T = any>(expression: string, opts: { awaitPromise?: boolean; timeoutMs?: number } = {}): Promise<T | null> {
+  async evaluate<T = any>(
+    expression: string,
+    opts: { awaitPromise?: boolean; timeoutMs?: number } = {}
+  ): Promise<T | null> {
     let result: any;
     try {
-      result = await this.send('Runtime.evaluate', {
-        expression,
-        returnByValue: true,
-        awaitPromise: opts.awaitPromise ?? false,
-        userGesture: true
-      }, opts.timeoutMs ?? 30_000);
+      result = await this.send(
+        'Runtime.evaluate',
+        {
+          expression,
+          returnByValue: true,
+          awaitPromise: opts.awaitPromise ?? false,
+          userGesture: true
+        },
+        opts.timeoutMs ?? 30_000
+      );
     } catch (err) {
       this.nullStreak++;
       if (this.nullStreak >= 10) throw new CdpError('CDP 连续失败，判定连接已损坏', 'BROKEN');
@@ -128,14 +115,17 @@ export class CdpClient {
     }
     if (!result || !('result' in result)) {
       this.nullStreak++;
-      if (this.nullStreak >= 10) throw new CdpError('CDP 连续返回空结果，判定连接已损坏', 'BROKEN');
+      if (this.nullStreak >= 10) {
+        throw new CdpError('CDP 连续返回空结果，判定连接已损坏', 'BROKEN');
+      }
       return null;
     }
     this.nullStreak = 0;
     if (result.exceptionDetails) {
-      const desc = result.exceptionDetails.exception?.description
-        ?? result.exceptionDetails.text
-        ?? '页面脚本异常';
+      const desc =
+        result.exceptionDetails.exception?.description ??
+        result.exceptionDetails.text ??
+        '页面脚本异常';
       throw new CdpError(String(desc).split('\n')[0]);
     }
     return (result.result?.value ?? null) as T | null;
@@ -149,36 +139,119 @@ export class CdpClient {
 
   async bringToFront(): Promise<void> {
     await this.send('Page.bringToFront').catch(() => undefined);
-    await this.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => undefined);
+    await this.send('Emulation.setFocusEmulationEnabled', { enabled: true }).catch(
+      () => undefined
+    );
+  }
+
+  // ---------- 输入：不再依赖系统辅助功能权限 ----------
+
+  /**
+   * 用真实的输入法事件写入文本。
+   * 关键：JS 直接改 value 无法让 React 受控组件同步状态（发送按钮保持 disabled），
+   * 必须走 Input.insertText。调用前建议先 focus + select。
+   */
+  async insertText(text: string): Promise<void> {
+    await this.send('Input.insertText', { text });
+  }
+
+  /** 逐字符输入（某些场景 insertText 不触发 composition 回调时使用） */
+  async typeText(text: string, delayMs = 0): Promise<void> {
+    for (const ch of text) {
+      await this.send('Input.dispatchKeyEvent', { type: 'keyDown', text: ch, key: ch });
+      await this.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+
+  async dispatchKey(init: KeyEventInit): Promise<void> {
+    const params = {
+      key: init.key,
+      code: init.code ?? init.key,
+      windowsVirtualKeyCode: init.keyCode ?? 0,
+      nativeVirtualKeyCode: init.keyCode ?? 0,
+      modifiers: init.modifiers ?? 0,
+      ...(init.text ? { text: init.text } : {})
+    };
+    await this.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params });
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
+  }
+
+  async pressEnter(): Promise<void> {
+    await this.dispatchKey({ key: 'Enter', code: 'Enter', keyCode: 13 });
+  }
+
+  async pressEscape(): Promise<void> {
+    await this.dispatchKey({ key: 'Escape', code: 'Escape', keyCode: 27 });
+  }
+
+  /** 全选当前焦点元素内容（配合 insertText 覆盖旧文本） */
+  async selectAll(): Promise<void> {
+    await this.dispatchKey({ key: 'a', code: 'KeyA', keyCode: 65, modifiers: MOD.meta });
+  }
+
+  async mouseClick(x: number, y: number, button: 'left' | 'right' | 'middle' = 'left', clickCount = 1): Promise<void> {
+    const base = { x, y, button, clickCount, buttons: button === 'left' ? 1 : button === 'right' ? 2 : 4 };
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
+    await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...base });
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base });
+  }
+
+  async mouseMove(x: number, y: number): Promise<void> {
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, button: 'none', buttons: 0 });
+  }
+
+  async mouseScroll(x: number, y: number, deltaY: number): Promise<void> {
+    await this.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x,
+      y,
+      deltaX: 0,
+      deltaY,
+      button: 'none',
+      buttons: 0
+    });
   }
 
   /** 用 CDP DOM.setFileInputFiles 往页面的 <input type=file> 塞文件 */
   async setFilesOnInput(files: string[], selector = 'input[type="file"]'): Promise<boolean> {
-    const doc = await this.send<{ root: { nodeId: number } }>('DOM.getDocument', { depth: 1 });
-    const q = await this.send<{ nodeId: number }>('DOM.querySelector', {
-      nodeId: doc.root.nodeId,
-      selector
-    }).catch(() => ({ nodeId: 0 }));
+    const doc = await this.send<{ root: { nodeId: number } }>('DOM.getDocument', { depth: -1 });
+    const q = await this
+      .send<{ nodeId: number }>('DOM.querySelector', { nodeId: doc.root.nodeId, selector })
+      .catch(() => ({ nodeId: 0 }));
     if (!q || !q.nodeId) return false;
     await this.send('DOM.setFileInputFiles', { nodeId: q.nodeId, files });
     return true;
   }
 
-  async closeBrowser(): Promise<void> {
-    await this.send('Browser.close', {}, 5000).catch(() => undefined);
+  /** 读页面内 localStorage（用于迁移登录态） */
+  async dumpLocalStorage(): Promise<Record<string, string>> {
+    const res = await this.evaluate<Record<string, string>>(
+      `(() => {
+        const out = {};
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k !== null) out[k] = localStorage.getItem(k) ?? '';
+        }
+        return out;
+      })()`
+    );
+    return res ?? {};
   }
 
   close(): void {
     this.closed = true;
-    try {
-      this.ws?.close();
-    } catch {
-      /* ignore */
+    if (this.attached && !this.wc.isDestroyed()) {
+      try {
+        this.wc.debugger.detach();
+      } catch {
+        /* ignore */
+      }
     }
-    this.ws = null;
+    this.attached = false;
   }
 
   get isOpen(): boolean {
-    return !!this.ws && !this.closed;
+    return this.attached && !this.closed;
   }
 }

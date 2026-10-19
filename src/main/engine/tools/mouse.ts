@@ -1,62 +1,115 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { readPermState, AX_HINT } from './perm';
-
-const exec = promisify(execFile);
+import type { CdpClient } from '../cdp';
+import { loadSelectors } from '../selectors';
 
 export interface MouseResult {
   ok: boolean;
   output: string;
 }
 
+/**
+ * 鼠标工具 —— 从「CGEvent + 辅助功能权限」改为 CDP Input.dispatchMouseEvent。
+ *
+ * 旧方案在未授权辅助功能时会静默失败（CGEvent 被系统丢弃，macinput 仍返回 OK），
+ * 模型会被骗；CDP 这条路不需要任何系统权限，且坐标就是页面 CSS 像素，
+ * 与 capturePage 的截图完全同尺度，模型可以直接照图点。
+ */
 export async function controlMouse(
   params: { x: number | null; y: number | null; button: string },
-  macinputPath: string
+  client: CdpClient
 ): Promise<MouseResult> {
   if (params.x === null || params.y === null || Number.isNaN(params.x) || Number.isNaN(params.y)) {
     return {
       ok: false,
-      output: '[工具][错误] 鼠标坐标解析失败：需要在 agent_mouse_simulate_1/2 中给出数字 x/y。'
+      output:
+        '[工具][错误] 鼠标坐标解析失败。\n' +
+        '正确写法：_1_ 写 x 数字、_2_ 写 y 数字；\n' +
+        '要看有什么可点：_1_ 写 list；只想滚动：_1_ 写 scroll，_2_ 写 dy（负数向上）。'
     };
   }
-  const perm = await readPermState(macinputPath);
-  if (!perm.accessibilityTrusted) {
+  const button = (['left', 'right', 'middle'].includes(params.button) ? params.button : 'left') as
+    | 'left'
+    | 'right'
+    | 'middle';
+  try {
+    await client.mouseClick(params.x, params.y, button);
+    // 回读落点命中的元素，帮模型确认点到了什么
+    const hit = await client.evaluate<string>(`(() => {
+      const el = document.elementFromPoint(${params.x}, ${params.y});
+      if (!el) return '(无元素)';
+      const txt = (el.innerText || '').trim().slice(0, 40);
+      const cls = (el.className || '').toString().slice(0, 60);
+      return el.tagName.toLowerCase() + (cls ? '.' + cls : '') + (txt ? ' | ' + txt : '');
+    })()`);
+    return {
+      ok: true,
+      output: `页面点击 (${params.x}, ${params.y}) 按键=${button}\n命中元素：${hit ?? '(未知)'}`
+    };
+  } catch (err) {
     return {
       ok: false,
-      output:
-        '[工具][错误] 鼠标模拟失败：缺少「辅助功能」权限（CGEvent 会被系统丢弃，不会报错）。\n' + AX_HINT
+      output: `[工具][错误] 页面点击失败: ${String(err instanceof Error ? err.message : err).slice(0, 300)}`
     };
-  }
-  try {
-    const { stdout } = await exec(
-      macinputPath,
-      ['mouse', 'click', String(params.x), String(params.y), params.button],
-      { timeout: 10_000 }
-    );
-    return { ok: true, output: `鼠标已点击 (${params.x}, ${params.y}) 按键=${params.button}\n${stdout.trim()}` };
-  } catch (err: any) {
-    const msg = String(err?.stderr || err?.message || err);
-    if (/not trusted|accessibility/i.test(msg) || msg.includes('143')) {
-      return {
-        ok: false,
-        output:
-          '[工具][错误] 鼠标模拟失败：缺少「辅助功能」权限。\n' +
-          '请到 系统设置 → 隐私与安全性 → 辅助功能，勾选 EAgent 后重启应用。'
-      };
-    }
-    return { ok: false, output: `[工具][错误] 鼠标模拟失败: ${msg.slice(0, 300)}` };
   }
 }
 
-export async function mouseScroll(dy: number, macinputPath: string): Promise<MouseResult> {
-  const perm = await readPermState(macinputPath);
-  if (!perm.accessibilityTrusted) {
-    return { ok: false, output: '[工具][错误] 滚轮失败：缺少「辅助功能」权限。\n' + AX_HINT };
-  }
+export async function mouseScroll(
+  params: { x: number | null; y: number | null; dy: number },
+  client: CdpClient
+): Promise<MouseResult> {
+  const x = params.x ?? 400;
+  const y = params.y ?? 400;
   try {
-    await exec(macinputPath, ['mouse', 'scroll', String(dy)], { timeout: 8000 });
-    return { ok: true, output: `滚轮 ${dy}` };
-  } catch (err: any) {
-    return { ok: false, output: `[工具][错误] 滚轮失败: ${String(err?.message ?? err).slice(0, 200)}` };
+    await client.mouseScroll(x, y, params.dy);
+    const info = await client.evaluate<string>(`(() => {
+      const el = document.elementFromPoint(${x}, ${y});
+      const sc = el && el.closest('[class*="scroll"],[class*="overflow"]');
+      if (sc) return 'scrollTop=' + Math.round(sc.scrollTop);
+      return 'scrollY=' + Math.round(window.scrollY);
+    })()`);
+    return { ok: true, output: `页面滚轮 (${x}, ${y}) dy=${params.dy}\n${info ?? ''}` };
+  } catch (err) {
+    return {
+      ok: false,
+      output: `[工具][错误] 页面滚轮失败: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`
+    };
+  }
+}
+
+/** 把当前页面上所有可点击元素列出来，供模型选择坐标 */
+export async function listClickables(client: CdpClient, limit = 60): Promise<{ ok: boolean; output: string }> {
+  const expr = `(() => {
+    const out = [];
+    const seen = new Set();
+    for (const el of document.querySelectorAll('button,a,[role="button"],input,textarea,[contenteditable="true"]')) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      if (r.bottom < 0 || r.top > window.innerHeight) continue;
+      const label = ((el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || '') + '').trim().slice(0, 40);
+      const key = Math.round(r.x) + ',' + Math.round(r.y) + ',' + label;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        tag: el.tagName.toLowerCase(),
+        cls: (el.className || '').toString().slice(0, 50),
+        label,
+        x: Math.round(r.x + r.width / 2),
+        y: Math.round(r.y + r.height / 2),
+        w: Math.round(r.width),
+        h: Math.round(r.height)
+      });
+      if (out.length >= ${limit}) break;
+    }
+    return out;
+  })()`;
+  try {
+    const list = await client.evaluate<any[]>(expr);
+    if (!list || !list.length) return { ok: true, output: '(页面上没有找到可点击元素)' };
+    const lines = list.map(
+      (e, i) =>
+        `${i + 1}. (${e.x}, ${e.y}) ${e.tag} ${e.w}×${e.h} ${e.label ? '「' + e.label + '」' : ''} ${e.cls ? '[' + e.cls + ']' : ''}`
+    );
+    return { ok: true, output: `页面可点击元素（${list.length} 个，坐标为点击中心点）：\n` + lines.join('\n') };
+  } catch (err) {
+    return { ok: false, output: `[工具][错误] 枚举失败: ${String(err instanceof Error ? err.message : err).slice(0, 200)}` };
   }
 }

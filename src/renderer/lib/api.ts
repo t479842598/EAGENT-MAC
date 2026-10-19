@@ -1,5 +1,12 @@
 import type { DoctorReport, SessionEvent, Settings } from '@shared/types';
 
+export interface SessionBlobInfo {
+  ok: boolean;
+  path: string;
+  cookies: number;
+  storage: number;
+}
+
 /** preload 暴露的 window.eagent 类型声明 */
 export interface EagentApi {
   boot(): Promise<string>;
@@ -9,6 +16,19 @@ export interface EagentApi {
   send(text: string, files?: string[]): Promise<boolean>;
   approve(callId: string, verdict: 'allow_once' | 'always_allow' | 'deny'): Promise<boolean>;
   onEvent(cb: (event: SessionEvent) => void): () => void;
+
+  setPageVisible(visible: boolean): Promise<boolean>;
+  togglePage(): Promise<boolean>;
+  isPageVisible(): Promise<boolean>;
+  setPageBounds(b: { x: number; y: number; width: number; height: number }): Promise<boolean>;
+  onPageVisibility(cb: (visible: boolean) => void): () => void;
+  onRelayout(cb: () => void): () => void;
+
+  exportSession(): Promise<SessionBlobInfo>;
+  importSession(): Promise<SessionBlobInfo>;
+  onMenuExport(cb: () => void): () => void;
+  onMenuImport(cb: () => void): () => void;
+
   getSettings(): Promise<Settings>;
   setSettings(patch: Partial<Settings>): Promise<Settings>;
   defaults(): Promise<Settings>;
@@ -20,6 +40,7 @@ export interface EagentApi {
   appVersion(): Promise<string>;
   openExternal(url: string): Promise<boolean>;
   revealPath(p: string): Promise<boolean>;
+  getContentSize(): Promise<{ width: number; height: number }>;
 }
 
 declare global {

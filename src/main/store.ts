@@ -6,9 +6,6 @@ import type { Settings } from '../shared/types';
 
 const DEFAULTS: Settings = {
   workDir: path.join(os.homedir(), 'EAgent'),
-  chromePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  debugPort: 9222,
-  userDataDir: path.join(os.homedir(), 'Library/Application Support/EAgent/chrome-profile'),
   autoApprove: false,
   alwaysAllow: [],
   commandTimeoutMs: 120_000,
@@ -28,7 +25,12 @@ export function getSettings(): Settings {
   if (cached) return cached;
   try {
     const raw = fs.readFileSync(settingsPath(), 'utf8');
-    cached = { ...DEFAULTS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw) as Partial<Settings> & Record<string, unknown>;
+    // 迁移：旧版把 Chrome 路径/调试端口/独立 profile 目录写进了配置，内嵌版已无意义
+    delete parsed.chromePath;
+    delete parsed.debugPort;
+    delete parsed.userDataDir;
+    cached = { ...DEFAULTS, ...parsed };
   } catch {
     cached = { ...DEFAULTS };
   }

@@ -56,7 +56,8 @@ export interface SessionStats {
   turns: number;
   toolCalls: number;
   state: SessionState;
-  chromeConnected: boolean;
+  /** 内嵌页面是否已连接（原 chromeConnected） */
+  pageConnected: boolean;
   loggedIn: boolean;
   lastLatencyMs?: number;
 }
@@ -76,9 +77,6 @@ export type SessionEvent =
 
 export interface Settings {
   workDir: string;
-  chromePath: string;
-  debugPort: number;
-  userDataDir: string;
   autoApprove: boolean;
   alwaysAllow: ToolName[];
   commandTimeoutMs: number;
@@ -98,7 +96,8 @@ export interface CheckResult {
 
 export interface DoctorReport {
   results: CheckResult[];
-  macinput: Record<string, unknown> | null;
+  /** 内嵌页面状态快照（原 macinput info） */
+  page: Record<string, unknown> | null;
 }
 
 export interface SessionMeta {

@@ -31,7 +31,7 @@ const EMPTY_STATS: SessionStats = {
   turns: 0,
   toolCalls: 0,
   state: 'idle',
-  chromeConnected: false,
+  pageConnected: false,
   loggedIn: false
 };
 

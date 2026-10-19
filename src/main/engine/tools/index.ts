@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { WebContents } from 'electron';
 import type { Settings, ToolName } from '../../../shared/types';
+import type { CdpClient } from '../cdp';
 import type { ParsedToolCall } from '../sentinel';
 import { detectDanger, runShell } from './shell';
 import { takeScreenshot } from './screenshot';
-import { controlMouse } from './mouse';
+import { controlMouse, mouseScroll, listClickables } from './mouse';
 import { controlKeyboard } from './keyboard';
 
 export interface ToolExecResult {
@@ -17,8 +19,11 @@ export interface ToolExecResult {
 export interface ToolContext {
   settings: Settings;
   tempDir: string;
-  macinputPath: string;
   skillsDir: string;
+  /** 内嵌页面句柄，截图用 */
+  webContents: () => WebContents | null;
+  /** 进程内 CDP 客户端，鼠标/键盘用 */
+  client: () => CdpClient | null;
   uploadFiles: (files: string[]) => Promise<boolean>;
 }
 
@@ -39,9 +44,9 @@ export async function executeTool(
     case 'screenshot': {
       const r = await takeScreenshot(
         call.params as { target: 'screen' | 'window'; windowId: number | null },
+        ctx.webContents(),
         settings,
-        ctx.tempDir,
-        ctx.macinputPath
+        ctx.tempDir
       );
       return { ok: r.ok, output: r.output, files: r.filePath ? [r.filePath] : [] };
     }
@@ -56,21 +61,37 @@ export async function executeTool(
       const missing = files.filter((f) => !fs.existsSync(f));
       return {
         ok: true,
-        output: `已上传 ${existing.length} 个文件：\n${existing.map((f) => '- ' + path.basename(f)).join('\n')}` +
+        output:
+          `已上传 ${existing.length} 个文件：\n` +
+          existing.map((f) => '- ' + path.basename(f)).join('\n') +
           (missing.length ? `\n（跳过不存在的文件：${missing.join(', ')}）` : '')
       };
     }
     case 'mouse': {
-      const r = await controlMouse(
-        call.params as { x: number | null; y: number | null; button: string },
-        ctx.macinputPath
-      );
+      const client = ctx.client();
+      if (!client) return { ok: false, output: '[工具][错误] 页面未连接，无法执行鼠标操作' };
+      const p = call.params as {
+        x: number | null;
+        y: number | null;
+        button: string;
+        scrollDy?: number | null;
+        list?: boolean;
+      };
+      // 扩展能力：list=true 枚举页面可点击元素；scrollDy 存在时走滚轮
+      if (p.list) return await listClickables(client);
+      if (typeof p.scrollDy === 'number' && !Number.isNaN(p.scrollDy)) {
+        const r = await mouseScroll({ x: p.x, y: p.y, dy: p.scrollDy }, client);
+        return { ok: r.ok, output: r.output };
+      }
+      const r = await controlMouse({ x: p.x, y: p.y, button: p.button }, client);
       return { ok: r.ok, output: r.output };
     }
     case 'keyboard': {
+      const client = ctx.client();
+      if (!client) return { ok: false, output: '[工具][错误] 页面未连接，无法执行键盘操作' };
       const r = await controlKeyboard(
-        call.params as { mode: string; key: string; text: string; window: string },
-        ctx.macinputPath
+        call.params as { mode: string; key: string; text: string; window: string; plain?: string },
+        client
       );
       return { ok: r.ok, output: r.output };
     }

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Plus, ArrowUp, Square, X, FileText, Image as ImageIcon } from 'lucide-react';
 import { AttachmentCard } from '@cds/AttachmentCard';
 import { api } from '../lib/api';
+import { hotkeyAbort } from '../lib/format';
 
 interface PickedFile {
   path: string;
@@ -11,7 +12,8 @@ interface PickedFile {
 
 function toPicked(paths: string[]): PickedFile[] {
   return paths.map((p) => {
-    const name = p.split('/').pop() || p;
+    // 同时兼容 POSIX 与 Windows 路径分隔符
+    const name = p.split(/[\\/]/).pop() || p;
     return { path: p, name, size: '' };
   });
 }
@@ -118,7 +120,7 @@ export function Composer({ busy, disabled, placeholder, onSend, onAbort }: Compo
             <button
               type="button"
               onClick={onAbort}
-              title="中止（⌘.）"
+              title={`中止（${hotkeyAbort}）`}
               className="flex size-8 items-center justify-center rounded-lg bg-white/10 text-neutral-200 transition-colors hover:bg-white/15"
             >
               <Square size={13} fill="currentColor" />
@@ -137,7 +139,7 @@ export function Composer({ busy, disabled, placeholder, onSend, onAbort }: Compo
         </div>
       </div>
       <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-neutral-500">
-        工具执行需逐条授权 · ⌘. 随时急停
+        工具执行需逐条授权 · {hotkeyAbort} 随时急停
       </p>
     </div>
   );

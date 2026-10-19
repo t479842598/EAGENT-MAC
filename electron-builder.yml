@@ -10,29 +10,25 @@ files:
   - package.json
   - "!**/*.map"
 extraResources:
-  - from: bin
-    to: bin
   - from: resources
     to: resources
 asarUnpack:
   - resources/**
+artifactName: EAgent-${version}-${os}-${arch}.${ext}
 mac:
   category: public.app-category.developer-tools
   target:
     - target: dmg
-      arch: [arm64]
     - target: zip
-      arch: [arm64]
   darkModeSupport: true
   hardenedRuntime: false
   gatekeeperAssess: false
   identity: null
   extendInfo:
-    NSAppleEventsUsageDescription: EAgent 需要控制浏览器与模拟输入以执行你的指令。
     NSCameraUsageDescription: 不使用
     NSMicrophoneUsageDescription: 不使用
 dmg:
-  title: EAgent
+  title: EAgent ${version}
   contents:
     - x: 140
       y: 200
@@ -41,3 +37,17 @@ dmg:
       y: 200
       type: link
       path: /Applications
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+    - target: zip
+      arch: [x64, arm64]
+  executableName: EAgent
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: EAgent

@@ -12,10 +12,18 @@ export interface ShellResult {
   scriptPath: string;
 }
 
-/** 危险命令特征 —— 命中则强制二次确认（无视 Always Allow） */
+/**
+ * 危险命令特征 —— 命中则强制二次确认（无视 Always Allow）。
+ * 同时覆盖 POSIX 与 Windows 两套习惯写法：用户可能在 Mac 上 ssh 到其他机器，
+ * 也可能在 Windows 上跑 PowerShell。
+ */
 const DANGER_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /\brm\s+-[a-zA-Z]*[rf]/i, reason: '递归/强制删除 (rm -rf)' },
+  { re: /\bRemove-Item\b[^\n]*-(Recurse|Force)/i, reason: '递归/强制删除 (Remove-Item)' },
+  { re: /\bdel\s+\/[sq]/i, reason: '强制删除 (del /s /q)' },
+  { re: /\bformat\s+[a-z]:/i, reason: '格式化磁盘 (format)' },
   { re: /\bsudo\b/i, reason: '提权执行 (sudo)' },
+  { re: /\bStart-Process\b[^\n]*-Verb\s+RunAs/i, reason: '提权执行 (RunAs)' },
   { re: /\bdiskutil\b/i, reason: '磁盘操作 (diskutil)' },
   { re: /\blaunchctl\b/i, reason: '系统服务操作 (launchctl)' },
   { re: /\bmkfs|\bdd\s+if=/i, reason: '裸设备写入 (mkfs/dd)' },
@@ -23,6 +31,7 @@ const DANGER_PATTERNS: { re: RegExp; reason: string }[] = [
   { re: /:(){ :\|:& };:/, reason: 'fork 炸弹' },
   { re: /\bchmod\s+-R\s+777\s+\//i, reason: '全盘权限放开' },
   { re: /\b(shutdown|reboot|halt)\b/i, reason: '关机/重启' },
+  { re: /\bStop-Computer\b/i, reason: '关机/重启' },
   { re: /\bsecurity\s+(delete|dump)/i, reason: '钥匙串操作' }
 ];
 
@@ -33,6 +42,54 @@ export function detectDanger(script: string): string | null {
   return null;
 }
 
+const isWin = process.platform === 'win32';
+
+/** 各平台的默认 shell 与配套参数（Windows 优先 pwsh 7，回落系统自带 powershell.exe） */
+function shellSpec(): { cmd: string; args: (script: string) => string[]; ext: string; label: string } {
+  if (isWin) {
+    return {
+      cmd: 'powershell.exe',
+      args: (script) => ['-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      ext: 'ps1',
+      label: 'powershell'
+    };
+  }
+  return {
+    cmd: process.env.SHELL && process.env.SHELL.includes('zsh') ? 'zsh' : '/bin/zsh',
+    args: (script) => ['-lc', script],
+    ext: 'zsh',
+    label: 'zsh'
+  };
+}
+
+/** 补齐 PATH：GUI 启动的进程继承 launchd / explorer 的最小环境，找不到 brew、node 等 */
+function buildEnv(): NodeJS.ProcessEnv {
+  const base = { ...process.env };
+  if (isWin) {
+    const extra = [
+      path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs'),
+      path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'nodejs'),
+      path.join(process.env.APPDATA ?? '', 'npm')
+    ].filter((p) => p && fs.existsSync(p));
+    base.PATH = [...extra, base.PATH ?? ''].filter(Boolean).join(path.delimiter);
+    return base;
+  }
+  const current = (base.PATH ?? '').split(':');
+  const wanted = [
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    path.join(process.env.HOME ?? '', '.local/node/bin'),
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin'
+  ];
+  const merged = [...wanted, ...current.filter((p) => p && !wanted.includes(p))];
+  base.PATH = merged.join(':');
+  return base;
+}
+
 export async function runShell(
   script: string,
   settings: Settings,
@@ -41,25 +98,15 @@ export async function runShell(
 ): Promise<ShellResult> {
   const started = Date.now();
   fs.mkdirSync(tempDir, { recursive: true });
-  const scriptPath = path.join(tempDir, `shell_${Date.now()}.zsh`);
+  const spec = shellSpec();
+  const scriptPath = path.join(tempDir, `shell_${Date.now()}.${spec.ext}`);
   fs.writeFileSync(scriptPath, script, 'utf8');
 
   return await new Promise<ShellResult>((resolve) => {
-    const child = spawn('zsh', ['-lc', script], {
+    const child = spawn(spec.cmd, spec.args(script), {
       cwd: settings.workDir,
-      env: {
-        ...process.env,
-        PATH: [
-          '/opt/homebrew/bin',
-          '/opt/homebrew/sbin',
-          '/usr/local/bin',
-          path.join(process.env.HOME ?? '', '.local/node/bin'),
-          '/usr/bin',
-          '/bin',
-          '/usr/sbin',
-          '/sbin'
-        ].join(':')
-      }
+      env: buildEnv(),
+      windowsHide: true
     });
 
     let out = '';
@@ -77,7 +124,7 @@ export async function runShell(
       child.kill('SIGKILL');
     }, settings.commandTimeoutMs);
 
-    // ⌘. 急停：立刻杀掉正在跑的 shell，避免命令在后台继续执行
+    // ⌘. / Ctrl+. 急停：立刻杀掉正在跑的 shell，避免命令在后台继续执行
     let aborted = false;
     const onAbort = () => {
       aborted = true;
@@ -100,7 +147,7 @@ export async function runShell(
       signal?.removeEventListener('abort', onAbort);
       resolve({
         ok: false,
-        output: `[工具][错误] 无法启动 zsh: ${err.message}`,
+        output: `[工具][错误] 无法启动 ${spec.label}: ${err.message}`,
         exitCode: null,
         timedOut: false,
         durationMs: Date.now() - started,
