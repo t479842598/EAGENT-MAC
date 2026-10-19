@@ -44,6 +44,19 @@ export function detectDanger(script: string): string | null {
 
 const isWin = process.platform === 'win32';
 
+/** 优先用绝对路径调 Windows PowerShell，PATH 被 GUI 环境洗掉时也能起来 */
+function resolvePowershell(): string {
+  const root = process.env.SystemRoot ?? 'C:\\Windows';
+  const candidates = [
+    path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    path.join(root, 'SysWOW64', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return 'powershell.exe';
+}
+
 /**
  * 各平台的 shell 与配套参数。
  *
@@ -59,7 +72,7 @@ function shellSpec(): {
 } {
   if (isWin) {
     return {
-      cmd: 'powershell.exe',
+      cmd: resolvePowershell(),
       args: (_script, scriptPath) => [
         '-NoLogo',
         '-NonInteractive',
@@ -124,31 +137,53 @@ function killTree(child: ReturnType<typeof spawn>, force: boolean): void {
   }
 }
 
+/**
+ * Windows 上 process.env 的键名是 `Path` 而不是 `PATH`，而普通对象取值区分大小写 ——
+ * 直接读 base.PATH 会拿到 undefined 并把 PATH 覆盖成一两个自定义目录，
+ * 于是 System32 掉出搜索路径、连 powershell.exe 都找不到。所有环境变量都走这里大小写不敏感地取。
+ */
+function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const upper = name.toUpperCase();
+  for (const k of Object.keys(env)) {
+    if (k.toUpperCase() === upper) return env[k];
+  }
+  return undefined;
+}
+
 /** 补齐 PATH：GUI 启动的进程继承 launchd / explorer 的最小环境，找不到 brew、node 等 */
 function buildEnv(): NodeJS.ProcessEnv {
   const base = { ...process.env };
-  if (isWin) {
-    const extra = [
-      path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'nodejs'),
-      path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'nodejs'),
-      path.join(process.env.APPDATA ?? '', 'npm')
-    ].filter((p) => p && fs.existsSync(p));
-    base.PATH = [...extra, base.PATH ?? ''].filter(Boolean).join(path.delimiter);
-    return base;
+  const pathKey = (() => {
+    for (const k of Object.keys(base)) {
+      if (k.toUpperCase() === 'PATH') return k;
+    }
+    return 'PATH';
+  })();
+  const current = (base[pathKey] ?? '').split(path.delimiter).filter(Boolean);
+
+  const extra = isWin
+    ? [
+        path.join(envGet(base, 'ProgramFiles') ?? 'C:\\Program Files', 'nodejs'),
+        path.join(envGet(base, 'LOCALAPPDATA') ?? '', 'Programs', 'nodejs'),
+        path.join(envGet(base, 'APPDATA') ?? '', 'npm')
+      ].filter((p) => p && fs.existsSync(p))
+    : [
+        '/opt/homebrew/bin',
+        '/opt/homebrew/sbin',
+        '/usr/local/bin',
+        path.join(envGet(base, 'HOME') ?? '', '.local/node/bin'),
+        '/usr/bin',
+        '/bin',
+        '/usr/sbin',
+        '/sbin'
+      ].filter(Boolean);
+
+  const merged = [...extra, ...current.filter((p) => !extra.includes(p))];
+  // 环境块里同时存在 Path 和 PATH 时取值不保证，先清干净只留一个
+  for (const k of Object.keys(base)) {
+    if (k.toUpperCase() === 'PATH') delete base[k];
   }
-  const current = (base.PATH ?? '').split(':');
-  const wanted = [
-    '/opt/homebrew/bin',
-    '/opt/homebrew/sbin',
-    '/usr/local/bin',
-    path.join(process.env.HOME ?? '', '.local/node/bin'),
-    '/usr/bin',
-    '/bin',
-    '/usr/sbin',
-    '/sbin'
-  ];
-  const merged = [...wanted, ...current.filter((p) => p && !wanted.includes(p))];
-  base.PATH = merged.join(':');
+  base[pathKey] = merged.join(path.delimiter);
   return base;
 }
 
