@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { Settings } from '../../../shared/types';
+import { readPermState, SCR_HINT } from './perm';
 
 const exec = promisify(execFile);
 
@@ -25,6 +26,15 @@ export async function takeScreenshot(
 ): Promise<ScreenshotResult> {
   fs.mkdirSync(tempDir, { recursive: true });
   const file = path.join(tempDir, `屏幕截图_${Date.now()}.jpg`);
+
+  // 预检：未授权时 screencapture 会失败，提前给出可操作指引
+  const perm = await readPermState(macinputPath);
+  if (!perm.screenCaptureAllowed) {
+    return {
+      ok: false,
+      output: '[工具][错误] 截图失败：缺少「屏幕录制」权限。\n' + SCR_HINT
+    };
+  }
 
   const args = ['-x', '-o', '-C', '-t', 'jpg'];
   if (params.target === 'window' && params.windowId) {

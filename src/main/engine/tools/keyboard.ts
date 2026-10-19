@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readPermState, AX_HINT } from './perm';
 
 const exec = promisify(execFile);
 
@@ -13,6 +14,15 @@ export async function controlKeyboard(
   macinputPath: string
 ): Promise<KeyboardResult> {
   const mode = (params.mode || 'tap').toLowerCase();
+
+  const perm = await readPermState(macinputPath);
+  if (!perm.accessibilityTrusted) {
+    return {
+      ok: false,
+      output:
+        '[工具][错误] 键盘模拟失败：缺少「辅助功能」权限（CGEvent 会被系统丢弃，不会报错）。\n' + AX_HINT
+    };
+  }
 
   // 可选：先激活目标应用（对齐上游「窗口句柄」语义）
   if (params.window) {

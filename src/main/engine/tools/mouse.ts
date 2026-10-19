@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readPermState, AX_HINT } from './perm';
 
 const exec = promisify(execFile);
 
@@ -16,6 +17,14 @@ export async function controlMouse(
     return {
       ok: false,
       output: '[工具][错误] 鼠标坐标解析失败：需要在 agent_mouse_simulate_1/2 中给出数字 x/y。'
+    };
+  }
+  const perm = await readPermState(macinputPath);
+  if (!perm.accessibilityTrusted) {
+    return {
+      ok: false,
+      output:
+        '[工具][错误] 鼠标模拟失败：缺少「辅助功能」权限（CGEvent 会被系统丢弃，不会报错）。\n' + AX_HINT
     };
   }
   try {
@@ -40,6 +49,10 @@ export async function controlMouse(
 }
 
 export async function mouseScroll(dy: number, macinputPath: string): Promise<MouseResult> {
+  const perm = await readPermState(macinputPath);
+  if (!perm.accessibilityTrusted) {
+    return { ok: false, output: '[工具][错误] 滚轮失败：缺少「辅助功能」权限。\n' + AX_HINT };
+  }
   try {
     await exec(macinputPath, ['mouse', 'scroll', String(dy)], { timeout: 8000 });
     return { ok: true, output: `滚轮 ${dy}` };
