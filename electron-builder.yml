@@ -38,11 +38,11 @@ dmg:
       type: link
       path: /Applications
 win:
+  # 不在这里写死 arch —— 由 CLI 的 --x64 / --arm64 决定，
+  # 否则 CI 矩阵里两个 Windows job 都会各打两份，artifacts 体积翻倍且互相覆盖。
   target:
-    - target: nsis
-      arch: [x64, arm64]
-    - target: zip
-      arch: [x64, arm64]
+    - nsis
+    - zip
   executableName: EAgent
 nsis:
   oneClick: false
