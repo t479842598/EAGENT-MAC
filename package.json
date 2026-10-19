@@ -1,6 +1,6 @@
 {
   "name": "eagent-mac",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "EAgent — Claude-style desktop client that drives chat.deepseek.com inside an embedded Chromium with in-process CDP and local tool execution",
   "main": "./out/main/index.js",
   "license": "GPL-3.0",
