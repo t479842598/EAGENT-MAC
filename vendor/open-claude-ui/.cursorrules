@@ -1,0 +1,9 @@
+# Cursor Rules for open-claude-ui
+# Always read AGENTS.md for full Claude Design System (CDS) specifications, tokens, and motion physics.
+
+- Read and strictly comply with AGENTS.md in the repository root.
+- Follow the 4 canonical spring presets in `code-examples/ClaudeMotionPresets.ts`.
+- Use semantic CSS tokens from `code-examples/cds-theme.css`.
+- Always guard CJK IME inputs with `!(isComposing || keyCode === 229)`.
+- Use tabular-nums for numbers to eliminate layout shaking.
+- Verify with `npm run typecheck` and `npm run build` after making changes.

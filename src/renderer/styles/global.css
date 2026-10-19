@@ -1,0 +1,130 @@
+/* 设计令牌与纯 CSS 动效层 —— 原样引入 vendored open-claude-ui */
+@import '../../../vendor/open-claude-ui/code-examples/cds-theme.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 让 Tailwind 的 preflight 不覆盖 CDS 的排版基准 */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--cds-bg-app, #fcfcfb);
+  color: var(--cds-text-primary, #1a1a1a);
+  font-family: var(--cds-font-sans, 'Inter', system-ui, -apple-system, 'PingFang SC', sans-serif);
+  -webkit-font-smoothing: antialiased;
+}
+
+.dark body {
+  background: #151515;
+  color: var(--cds-text-primary, #f0f0f0);
+}
+
+/* 顶栏拖拽区：整个 header 可拖，交互元素必须排除 */
+.draggable-none {
+  -webkit-app-region: no-drag;
+}
+
+/* 细滚动条，贴合 Claude 桌面端观感 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, currentColor 28%, transparent);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Markdown 正文排版 */
+.md-body {
+  font-size: 0.9375rem;
+  line-height: 1.72;
+  word-break: break-word;
+}
+.md-body p {
+  margin: 0 0 0.75em;
+}
+.md-body p:last-child {
+  margin-bottom: 0;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0.5em 0 0.75em;
+  padding-left: 1.35em;
+}
+.md-body li {
+  margin: 0.22em 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3 {
+  font-weight: 600;
+  margin: 1.1em 0 0.5em;
+  line-height: 1.35;
+}
+.md-body h1 {
+  font-size: 1.25em;
+}
+.md-body h2 {
+  font-size: 1.12em;
+}
+.md-body h3 {
+  font-size: 1.02em;
+}
+.md-body code {
+  font-family: var(--cds-font-mono, 'SF Mono', Menlo, monospace);
+  font-size: 0.86em;
+  padding: 0.14em 0.36em;
+  border-radius: 5px;
+  background: var(--cds-bg-code, rgba(0, 0, 0, 0.055));
+}
+.md-body pre {
+  margin: 0.6em 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.md-body pre code {
+  background: transparent;
+  padding: 0;
+}
+.md-body blockquote {
+  margin: 0.6em 0;
+  padding-left: 0.85em;
+  border-left: 2px solid var(--cds-border, rgba(0, 0, 0, 0.12));
+  color: var(--cds-text-secondary, #6d6b67);
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.9em;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid var(--cds-border, rgba(0, 0, 0, 0.1));
+  padding: 0.35em 0.6em;
+}
+.md-body a {
+  color: var(--cds-clay, #d97757);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md-body hr {
+  border: 0;
+  border-top: 1px solid var(--cds-border, rgba(0, 0, 0, 0.1));
+  margin: 1em 0;
+}

@@ -1,0 +1,43 @@
+appId: com.t479842598.eagent
+productName: EAgent
+copyright: Copyright © 2026 t479842598
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+  - "!**/*.map"
+extraResources:
+  - from: bin
+    to: bin
+  - from: resources
+    to: resources
+asarUnpack:
+  - resources/**
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  darkModeSupport: true
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  identity: null
+  extendInfo:
+    NSAppleEventsUsageDescription: EAgent 需要控制浏览器与模拟输入以执行你的指令。
+    NSCameraUsageDescription: 不使用
+    NSMicrophoneUsageDescription: 不使用
+dmg:
+  title: EAgent
+  contents:
+    - x: 140
+      y: 200
+      type: file
+    - x: 400
+      y: 200
+      type: link
+      path: /Applications

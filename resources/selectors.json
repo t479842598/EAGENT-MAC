@@ -1,0 +1,33 @@
+{
+  "$comment": "DeepSeek 网页选择器。class 是构建期哈希（如 fbb737a4），改版会漂移；此处外置便于热修，无需重编译。数组按优先级回退。",
+  "assistant": [
+    ".ds-assistant-message-main-content",
+    "[class*=\"ds-assistant-message-main-content\"]",
+    "[class*=\"ds-markdown\"]"
+  ],
+  "user": [
+    "[class*=\"fbb737a4\"]",
+    "[class*=\"ds-user-message\"]"
+  ],
+  "input": [
+    "textarea",
+    "textarea[placeholder]"
+  ],
+  "sendButton": [
+    "div[role=\"button\"].ds-button--primary.ds-button--circle",
+    "[role=\"button\"][aria-label*=\"发送\"]",
+    "[role=\"button\"][aria-label*=\"Send\"]",
+    "div[role=\"button\"][aria-disabled=\"false\"]"
+  ],
+  "stopButton": [
+    "[role=\"button\"][aria-label*=\"停止\"]",
+    "[role=\"button\"][aria-label*=\"Stop\"]"
+  ],
+  "fileInput": [
+    "input[type=\"file\"]"
+  ],
+  "loginHint": [
+    "[class*=\"login\"]",
+    "button[class*=\"sign\"]"
+  ]
+}

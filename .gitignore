@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+bin/macinput
+.DS_Store
+*.log
+.vite/
+.tmp/
+*.tsbuildinfo

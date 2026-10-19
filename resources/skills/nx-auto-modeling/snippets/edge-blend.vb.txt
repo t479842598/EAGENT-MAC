@@ -1,0 +1,31 @@
+' --- SNIPPET: Edge Blend (fillet) - verified API structure on NX 10 ---
+' Radius is set via AddChainset(collector, radiusString), NOT a Radius property.
+'
+' Dim edges() As Edge = { e1, e2 }                 ' pick your edges
+' Dim col As ScCollector = wp.ScCollectors.CreateCollector()
+' Dim rule As EdgeDumbRule = wp.ScRuleFactory.CreateRuleEdgeDumb(edges)
+' col.ReplaceRules(New SelectionIntentRule(){rule}, False)
+'
+' Dim bb As EdgeBlendBuilder = wp.Features.CreateEdgeBlendBuilder(Nothing)
+' bb.AddChainset(col, "5")                          ' radius = 5 mm
+' Dim f As Feature = bb.CommitFeature()
+' bb.Destroy()
+' --- END SNIPPET ---
+
+' --- SNIPPET: Chamfer - on NX 10 ---
+' Dim ch As ChamferBuilder = wp.Features.CreateChamferBuilder(Nothing)
+' ch.SmartCollector = col                         ' edges via ScCollector
+' ch.FirstOffset = "2"                            ' first offset string
+' ' ch.Angle = "45"                               ' for angle method
+' Dim f As Feature = ch.CommitFeature()
+' ch.Destroy()
+' --- END SNIPPET ---
+
+' --- SNIPPET: Circular pattern of a feature - on NX 10 ---
+' Dim pf As PatternFeatureBuilder = wp.Features.CreatePatternFeatureBuilder(Nothing)
+' pf.PatternMethod = PatternMethodOptions.Circular
+' ' set the feature to copy, reference axis and count via pf.PatternService
+' ' (PatternDefinition) - reflect its members for your version.
+' Dim f As Feature = pf.CommitFeature()
+' pf.Destroy()
+' --- END SNIPPET ---
