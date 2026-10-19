@@ -5,7 +5,7 @@ import { SessionEngine } from './engine/session';
 import { ensureTempDir, buildSystemPrompt, writeSystemPromptFile } from './engine/prompt';
 import { registerIpc } from './ipc';
 import { createMainWindow, getMainWindow } from './window';
-import { getSettings } from './store';
+import { getSettings, setSettings } from './store';
 
 // 单实例锁：避免重复启动两个 Chrome 抢占同一个调试端口
 if (!app.requestSingleInstanceLock()) {
@@ -74,7 +74,11 @@ async function bootstrap() {
     macinputPath,
     skillsDir,
     systemPromptPath,
-    systemPrompt: promptContent
+    systemPrompt: promptContent,
+    // 「始终允许」要落盘，否则重启后白名单丢失，用户会被反复询问同一个工具
+    onSettingsChange: (patch) => {
+      setSettings(patch);
+    }
   });
 
   registerIpc({ engine, macinputPath, skillsDir, systemPromptPath });

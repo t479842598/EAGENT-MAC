@@ -26,6 +26,8 @@ export interface SessionEngineOptions {
   systemPromptPath: string;
   /** 系统提示词正文：首轮对话前注入，之后靠对话历史维持 */
   systemPrompt: string;
+  /** 设置变更回调：用户点「始终允许」时把白名单落盘，否则重启 App 就丢 */
+  onSettingsChange?: (patch: Partial<Settings>) => void;
 }
 
 interface PendingApproval {
@@ -178,7 +180,15 @@ export class SessionEngine extends EventEmitter {
       await this.boot();
       if (!this.driver) throw new Error('引擎未就绪');
     }
-    if (this.state === 'awaiting' || this.state === 'sending' || this.state === 'executing') {
+    const busyStates: SessionState[] = [
+      'awaiting',
+      'sending',
+      'executing',
+      'parsing',
+      'feeding',
+      'pending_approval'
+    ];
+    if (busyStates.includes(this.state)) {
       throw new Error('上一轮尚未结束');
     }
 
@@ -232,6 +242,9 @@ export class SessionEngine extends EventEmitter {
   ): Promise<boolean> {
     let nextPayload: { text?: string; files?: string[] } = { text: firstText, files: firstFiles };
     let guard = 0;
+    // 关键：abort() 会把 this.abortController 置 null，所以必须在这里捕获同一个 signal 引用，
+    // 否则后面的 signal.aborted 判断会读到 null 而漏掉中止。
+    const signal = this.abortController?.signal;
 
     while (nextPayload) {
       if (guard++ > 30) {
@@ -246,10 +259,10 @@ export class SessionEngine extends EventEmitter {
         text,
         files,
         timeoutMs: this.settings.replyTimeoutMs,
-        signal: this.abortController?.signal
+        signal
       });
       this.stats.lastLatencyMs = Date.now() - t0;
-      if (this.abortController?.signal.aborted) {
+      if (signal?.aborted) {
         this.setState('ready', '已中止');
         return false;
       }
@@ -307,6 +320,17 @@ export class SessionEngine extends EventEmitter {
       this.emitEvent({ type: 'assistant_done', message: assistantMsg });
 
       const verdict = await this.awaitApproval(toolCall, call);
+      // 急停会以 deny 结束等待，此时不应再回填「用户拒绝」让模型继续，直接收尾
+      if (signal?.aborted) {
+        this.emitEvent({
+          type: 'tool_update',
+          messageId,
+          callId: toolCall.id,
+          patch: { status: 'denied', finishedAt: Date.now(), output: '已急停' }
+        });
+        this.setState('ready', '已中止');
+        return false;
+      }
       if (verdict === 'deny') {
         this.emitEvent({
           type: 'tool_update',
@@ -337,7 +361,7 @@ export class SessionEngine extends EventEmitter {
 
       let execResult;
       try {
-        execResult = await executeTool(call, ctx);
+        execResult = await executeTool(call, ctx, signal);
       } catch (err) {
         execResult = {
           ok: false,
@@ -396,7 +420,9 @@ export class SessionEngine extends EventEmitter {
     this.pending = null;
     if (verdict === 'always_allow') {
       this.alwaysAllow.add(call.name);
-      this.settings.alwaysAllow = Array.from(this.alwaysAllow) as any;
+      const next = Array.from(this.alwaysAllow) as Settings['alwaysAllow'];
+      this.settings.alwaysAllow = next;
+      this.opts.onSettingsChange?.({ alwaysAllow: next });
     }
     resolve(verdict);
     return true;

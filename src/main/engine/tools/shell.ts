@@ -36,7 +36,8 @@ export function detectDanger(script: string): string | null {
 export async function runShell(
   script: string,
   settings: Settings,
-  tempDir: string
+  tempDir: string,
+  signal?: AbortSignal
 ): Promise<ShellResult> {
   const started = Date.now();
   fs.mkdirSync(tempDir, { recursive: true });
@@ -76,8 +77,27 @@ export async function runShell(
       child.kill('SIGKILL');
     }, settings.commandTimeoutMs);
 
+    // ⌘. 急停：立刻杀掉正在跑的 shell，避免命令在后台继续执行
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* 已退出 */
+        }
+      }, 800);
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+
     child.on('error', (err) => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       resolve({
         ok: false,
         output: `[工具][错误] 无法启动 zsh: ${err.message}`,
@@ -90,6 +110,7 @@ export async function runShell(
 
     child.on('close', (code) => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       let text = out;
       if (text.length >= limit) {
         text = text.slice(0, limit) + `\n…[输出已截断，共超过 ${limit} 字符]`;
@@ -97,8 +118,11 @@ export async function runShell(
       if (timedOut) {
         text += `\n[工具][错误] 命令超时（${settings.commandTimeoutMs}ms）已被强制终止`;
       }
+      if (aborted) {
+        text += '\n[工具][错误] 用户急停，命令已终止';
+      }
       resolve({
-        ok: code === 0 && !timedOut,
+        ok: code === 0 && !timedOut && !aborted,
         output: text.trim() || (code === 0 ? '(无输出)' : `(退出码 ${code}，无输出)`),
         exitCode: code,
         timedOut,

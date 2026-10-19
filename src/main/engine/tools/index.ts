@@ -22,14 +22,18 @@ export interface ToolContext {
   uploadFiles: (files: string[]) => Promise<boolean>;
 }
 
-export async function executeTool(call: ParsedToolCall, ctx: ToolContext): Promise<ToolExecResult> {
+export async function executeTool(
+  call: ParsedToolCall,
+  ctx: ToolContext,
+  signal?: AbortSignal
+): Promise<ToolExecResult> {
   const { settings } = ctx;
 
   switch (call.name) {
     case 'shell': {
       const script = String(call.params.script ?? '');
       const danger = detectDanger(script);
-      const r = await runShell(script, settings, ctx.tempDir);
+      const r = await runShell(script, settings, ctx.tempDir, signal);
       return { ok: r.ok, output: r.output, dangerReason: danger };
     }
     case 'screenshot': {
