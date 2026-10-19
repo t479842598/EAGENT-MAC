@@ -44,12 +44,31 @@ export function detectDanger(script: string): string | null {
 
 const isWin = process.platform === 'win32';
 
-/** 各平台的默认 shell 与配套参数（Windows 优先 pwsh 7，回落系统自带 powershell.exe） */
-function shellSpec(): { cmd: string; args: (script: string) => string[]; ext: string; label: string } {
+/**
+ * 各平台的 shell 与配套参数。
+ *
+ * Windows 走 `-File` 而不是 `-Command`：命令行参数在 Windows 上要经过
+ * ANSI/OEM 代码页转换，中文、引号、换行很容易被啃掉；写成带 BOM 的 .ps1
+ * 再交给 -File，脚本内容和编码都是原样。
+ */
+function shellSpec(): {
+  cmd: string;
+  args: (script: string, scriptPath: string) => string[];
+  ext: string;
+  label: string;
+} {
   if (isWin) {
     return {
       cmd: 'powershell.exe',
-      args: (script) => ['-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      args: (_script, scriptPath) => [
+        '-NoLogo',
+        '-NonInteractive',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        scriptPath
+      ],
       ext: 'ps1',
       label: 'powershell'
     };
@@ -60,6 +79,49 @@ function shellSpec(): { cmd: string; args: (script: string) => string[]; ext: st
     ext: 'zsh',
     label: 'zsh'
   };
+}
+
+/**
+ * Windows 上 PowerShell 往管道里写东西时用的是控制台输出代码页（简中是 936/GBK），
+ * Node 按 utf8 解码就会乱码。脚本开头把控制台输出改成 UTF-8，子进程也跟着继承 65001。
+ */
+const WIN_PREAMBLE = [
+  '$ErrorActionPreference = "Continue"',
+  '$ProgressPreference = "SilentlyContinue"',
+  'try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+  'try { $OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}',
+  ''
+].join('\n');
+
+/**
+ * Windows 上 child.kill() 只终止直接子进程，powershell 拉起的孙进程会变成孤儿，
+ * 所以走 taskkill /T 杀整棵进程树；taskkill 起不来时回落普通 kill。
+ */
+function killTree(child: ReturnType<typeof spawn>, force: boolean): void {
+  if (isWin && child.pid) {
+    try {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', ...(force ? ['/F'] : [])], {
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      // 没有 error 监听时，spawn 失败会变成 unhandled error 直接把主进程带崩
+      killer.on('error', () => {
+        try {
+          child.kill(force ? 'SIGKILL' : 'SIGTERM');
+        } catch {
+          /* 已退出 */
+        }
+      });
+      return;
+    } catch {
+      /* 回落普通 kill */
+    }
+  }
+  try {
+    child.kill(force ? 'SIGKILL' : 'SIGTERM');
+  } catch {
+    /* 已退出 */
+  }
 }
 
 /** 补齐 PATH：GUI 启动的进程继承 launchd / explorer 的最小环境，找不到 brew、node 等 */
@@ -100,10 +162,11 @@ export async function runShell(
   fs.mkdirSync(tempDir, { recursive: true });
   const spec = shellSpec();
   const scriptPath = path.join(tempDir, `shell_${Date.now()}.${spec.ext}`);
-  fs.writeFileSync(scriptPath, script, 'utf8');
+  // PowerShell 只有在文件带 BOM 时才按 UTF-8 解析；否则中文会变成乱码
+  fs.writeFileSync(scriptPath, isWin ? '\uFEFF' + WIN_PREAMBLE + script : script, 'utf8');
 
   return await new Promise<ShellResult>((resolve) => {
-    const child = spawn(spec.cmd, spec.args(script), {
+    const child = spawn(spec.cmd, spec.args(script, scriptPath), {
       cwd: settings.workDir,
       env: buildEnv(),
       windowsHide: true
@@ -121,21 +184,15 @@ export async function runShell(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killTree(child, true);
     }, settings.commandTimeoutMs);
 
     // ⌘. / Ctrl+. 急停：立刻杀掉正在跑的 shell，避免命令在后台继续执行
     let aborted = false;
     const onAbort = () => {
       aborted = true;
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* 已退出 */
-        }
-      }, 800);
+      killTree(child, false);
+      setTimeout(() => killTree(child, true), 800);
     };
     if (signal) {
       if (signal.aborted) onAbort();

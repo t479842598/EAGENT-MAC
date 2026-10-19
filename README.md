@@ -65,7 +65,7 @@ EAgent 不是又一个聊天窗口。它把你已经在用的 DeepSeek 网页版
 
 | 工具 | 作用 | 实现 |
 | --- | --- | --- |
-| `shell` | 执行命令、读写文件、跑脚本 | macOS 走 `zsh -lc`，Windows 走 `powershell.exe -NoProfile` |
+| `shell` | 执行命令、读写文件、跑脚本 | macOS 走 `zsh -lc`，Windows 把脚本写成带 UTF-8 BOM 的 `.ps1` 再交给 `powershell.exe -File`（避免代码页啃掉中文），超时/急停用 `taskkill /T` 杀整棵进程树 |
 | `screenshot` | 截取内嵌网页 | `webContents.capturePage()` → JPEG |
 | `upload` | 把本地文件传给网页 | CDP `DOM.setFileInputFiles` |
 | `mouse` | 在网页里点击 / 移动 / 滚动 / 枚举可点元素 | CDP `Input.dispatchMouseEvent` |
@@ -112,7 +112,7 @@ npm run dist:win     # 打 nsis 安装包 + zip（需在 Windows 上跑）
 
 | 工作流 | 触发 | 做什么 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | push / PR | `npm ci` → `typecheck` → `build` |
+| `.github/workflows/ci.yml` | push / PR | `npm ci` → `typecheck` → `build`；另起 macos-14 + windows-latest 两个 job 跑 `npm run test:shell`（shell 工具真机冒烟：中文编码、多行、退出码、超时、急停、危险命令识别） |
 | `.github/workflows/release.yml` | 推 `v*` tag 或手动运行 | 四平台并行打包 → 上传 artifact →（tag 触发时）建 Release |
 
 发布一个新版本：

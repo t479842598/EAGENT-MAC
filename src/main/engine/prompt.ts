@@ -31,7 +31,7 @@ export function buildSystemPrompt(opts: {
   const shellTitle = isWin ? '## 工具一：shell（执行 PowerShell 命令）' : '## 工具一：shell（执行 zsh 命令）';
   const shellBody = isWin ? '你的 PowerShell 脚本正文，可以多行' : '你的 zsh 脚本正文，可以多行';
   const shellDesc = isWin
-    ? `- 执行器是 powershell.exe -NoProfile -Command 加脚本正文，默认工作目录 ${workDir}，超时 120 秒。`
+    ? `- 执行器把脚本正文写成带 BOM 的 .ps1 再交给 powershell.exe -File 执行，默认工作目录 ${workDir}，超时 120 秒。`
     : `- 执行器是 zsh -lc 加脚本正文，默认工作目录 ${workDir}，超时 120 秒。`;
   const osLine = isWin
     ? '- 你现在运行在 Windows 上：路径分隔符是反斜杠，盘符形如 C:\\Users\\name，命令请按 PowerShell 语法书写。'

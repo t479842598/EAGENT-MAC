@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "description": "EAgent — Claude-style desktop client that drives chat.deepseek.com inside an embedded Chromium with in-process CDP and local tool execution",
   "main": "./out/main/index.js",
-  "author": "t479842598",
   "license": "GPL-3.0",
-  "private": true,
+  "author": "t479842598",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -14,7 +13,8 @@
     "dist:mac": "electron-vite build && electron-builder --mac",
     "dist:win": "electron-vite build && electron-builder --win",
     "dist": "electron-vite build && electron-builder --mac --win",
-    "sync-cds": "bash scripts/sync-cds.sh"
+    "sync-cds": "bash scripts/sync-cds.sh",
+    "test:shell": "node scripts/test/shell-smoke.mjs"
   },
   "dependencies": {
     "framer-motion": "^11.11.17",
@@ -36,6 +36,7 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "esbuild": "^0.21.5"
   }
 }

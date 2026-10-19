@@ -23,3 +23,21 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
+
+  shell-smoke:
+    name: shell 工具冒烟（${{ matrix.os }}）
+    # 真机双平台跑：Windows 走 powershell.exe -File + UTF-8 BOM，
+    # macOS 走 zsh -lc。本地只有一台机器，跨平台编码/路径/终止只能靠这里覆盖。
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:shell
